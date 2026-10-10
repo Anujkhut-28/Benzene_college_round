@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>voice-browser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root{
+    --bg:#000;--surface:#0a0a0a;--hover:#111;--line:#242424;--line2:#3a3a3a;
+    --text:#ededed;--muted:#a1a1a1;--dim:#6e6e6e;
+    --accent:#fff;--blue:#52a8ff;--green:#3ecf6e;--red:#ff5c5c;--amber:#f5a623;
+    --sans:Geist,Inter,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-family:var(--sans);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  :focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+
+  /* header */
+  header{display:flex;align-items:center;gap:20px;height:52px;padding:0 20px;border-bottom:1px solid var(--line)}
+  header h1{font-size:14px;font-weight:600;margin:0;letter-spacing:-.01em}
+  .stats{display:flex;gap:20px;color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums;overflow:hidden;white-space:nowrap}
+  .stats b{color:var(--muted);font-weight:500;font-family:var(--mono)}
+  .spacer{flex:1}
+  #ws{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:8px}
+  #ws::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--amber)}
+  #ws.ok::before{background:var(--green)}
+
+  /* layout: columns divided by single lines, no nested cards */
+  main{display:grid;grid-template-columns:340px minmax(0,1fr) 360px;height:calc(100% - 52px)}
+  .col{display:flex;flex-direction:column;min-height:0;min-width:0;border-right:1px solid var(--line);overflow:auto}
+  .col:last-child{border-right:0}
+  section{padding:18px 20px;border-bottom:1px solid var(--line)}
+  section:last-child{border-bottom:0}
+  section.grow{flex:1;min-height:160px;display:flex;flex-direction:column}
+  .scroll{flex:1;min-height:0;overflow:auto}
+  h2{font-size:13px;font-weight:500;color:var(--muted);margin:0 0 12px;display:flex;align-items:center;gap:8px}
+  h2 .r{margin-left:auto;font-weight:400;color:var(--dim);font-size:12px}
+  h3{font-size:12px;font-weight:500;color:var(--dim);margin:20px 0 8px;display:flex}
+  h3 .r{margin-left:auto;font-weight:400}
+  .small{font-size:12px;color:var(--dim)}
+  .mono{font-family:var(--mono);font-size:12px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+  /* controls */
+  button{font:inherit;font-weight:500;background:transparent;color:var(--text);border:1px solid var(--line2);border-radius:6px;padding:6px 12px;cursor:pointer;transition:background .1s,border-color .1s}
+  button:hover{background:var(--hover);border-color:#555}
+  button:disabled{opacity:.5;cursor:default}
+  button.primary{background:var(--accent);color:#000;border-color:var(--accent)}
+  button.primary:hover{background:#d4d4d4;border-color:#d4d4d4}
+  input[type=text]{flex:1;min-width:0;font:inherit;background:var(--bg);border:1px solid var(--line2);color:var(--text);border-radius:6px;padding:7px 10px}
+  input[type=text]::placeholder{color:var(--dim)}
+  input[type=text]:focus{outline:0;border-color:var(--text)}
+  select{font:inherit;font-size:12px;background:var(--bg);border:1px solid var(--line2);color:var(--text);border-radius:6px;padding:4px 6px}
+  input[type=range]{accent-color:#fff}
+  input[type=checkbox]{accent-color:#fff}
+
+  /* speech */
+  .dot{width:8px;height:8px;border-radius:50%;background:#3a3a3a;display:inline-block}
+  .dot.on{background:var(--red);animation:pulse 1.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,92,92,.5)}100%{box-shadow:0 0 0 7px rgba(255,92,92,0)}}
+  @media (prefers-reduced-motion:reduce){.dot.on{animation:none}}
+  #transcript{font-size:22px;font-weight:500;letter-spacing:-.02em;line-height:1.3;min-height:58px;margin-bottom:16px;word-break:break-word}
+  #transcript.acted{color:var(--green)}
+  #transcript .interim{color:var(--dim);font-weight:400}
+  #pending{color:var(--amber);margin-top:10px;font-size:12px}
+  #pending:empty{display:none}
+
+  /* eye tracking */
+  details summary{list-style:none;cursor:pointer;display:flex;align-items:center;font-size:13px;font-weight:500;color:var(--muted)}
+  details summary::-webkit-details-marker{display:none}
+  details summary::after{content:"+";margin-left:8px;color:var(--dim)}
+  details[open] summary::after{content:"\2212"}
+  details[open] summary{margin-bottom:12px}
+  .headwrap{position:relative;width:100%;max-width:300px;border-radius:6px;overflow:hidden;background:var(--surface);border:1px solid var(--line)}
+  #headvideo{width:100%;display:block;transform:scaleX(-1)}
+  #headcanvas{position:absolute;inset:0;width:100%;height:100%}
+  #dwellring{position:absolute;right:8px;bottom:8px;width:40px;height:40px;opacity:0;transition:opacity .15s}
+  #dwellring svg{width:100%;height:100%;transform:rotate(-90deg)}
+  #dwellring circle{fill:none;stroke-width:3}
+  #dwellring .bg{stroke:rgba(255,255,255,.2)}
+  #dwellring .fg{stroke:#fff;stroke-linecap:round;stroke-dasharray:113;stroke-dashoffset:calc(113 - 113 * var(--p,0))}
+  .settings{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center;margin-top:14px;font-size:12px;color:var(--muted)}
+  .settings .full{grid-column:1/-1}
+  .settings label{display:flex;align-items:center;gap:6px}
+  .settings .ctl{display:flex;align-items:center;gap:8px}
+  .settings .ctl input[type=range]{flex:1;min-width:80px}
+  .settings .ctl span{min-width:44px;text-align:right;font-family:var(--mono);color:var(--text)}
+
+  /* decision */
+  .verdict{font-size:20px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px}
+  .verdict.act{color:var(--green)}
+  .verdict.wait{color:var(--amber)}
+  .verdict.ignore{color:var(--dim)}
+  .verdict.confirm{color:var(--red)}
+  .verdict.disambiguate{color:var(--blue)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:0 32px}
+  @media (max-width:1400px){.two{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{padding:6px 8px 6px 0;text-align:left;border-bottom:1px solid var(--line);font-weight:400}
+  th{color:var(--dim)}
+  td.pass{color:var(--green)} td.fail{color:var(--red)}
+  tr:last-child td{border-bottom:0}
+  .bar{display:grid;grid-template-columns:minmax(0,130px) 1fr 38px;gap:10px;align-items:center;margin:6px 0;font-size:12px}
+  .bar .lbl{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bar .lbl.win{color:var(--text)}
+  .track{height:2px;background:var(--line)}
+  .fill{height:100%;background:#555;transition:width .12s}
+  .fill.win{background:var(--accent)}
+  .fill.noul{background:#777}
+  .num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);color:var(--dim)}
+
+  /* page + elements */
+  .kv{display:grid;grid-template-columns:72px 1fr;gap:6px 12px;margin:0}
+  .kv dt{color:var(--dim)} .kv dd{margin:0;word-break:break-all}
+  .el{display:grid;grid-template-columns:32px 64px 1fr;gap:8px;padding:4px 8px;margin:0 -8px;border-radius:4px;border-left:2px solid transparent;font-size:12px;align-items:baseline}
+  .el .id{color:var(--text);font-family:var(--mono)}
+  .el .role{color:var(--dim)}
+  .el .txt{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .el.cand{background:var(--hover)}
+  .el.hot{background:#1a1a1a;border-left-color:var(--accent)}
+  .el.hot .txt{color:var(--text)}
+
+  /* log */
+  .log{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .log div{padding:2px 0;white-space:pre-wrap;word-break:break-word}
+  .log .act{color:var(--green)} .log .error{color:var(--red)} .log .warn{color:var(--amber)} .log .debug{color:var(--dim)}
+
+  @media (max-width:1100px){
+    html,body{height:auto}
+    header{flex-wrap:wrap;height:auto;padding:12px 20px;gap:8px 20px}
+    .stats{flex-wrap:wrap;order:3;width:100%}
+    main{display:block;height:auto}
+    .col{border-right:0;border-bottom:1px solid var(--line);overflow:visible}
+    .scroll{max-height:320px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>voice-browser</h1>
+  <div class="stats">
+    <span>Model <b id="model">–</b></span>
+    <span>Latency <b id="lat">–</b> ms (p50 <b id="p50">–</b>)</span>
+    <span>Calls <b id="calls">0</b></span>
+    <span>Actions <b id="actions">0</b></span>
+    <span>Cost <b id="cost">$0.000000</b></span>
+    <span title="Average from last spoken word to decision, and to action finished (including page load)">Word to decision <b id="c2d">–</b> ms, to done <b id="c2a">–</b> ms</span>
+  </div>
+  <div class="spacer"></div>
+  <span id="ws">Connecting</span>
+</header>
+
+<main>
+  <!-- input -->
+  <div class="col">
+    <section>
+      <h2><span class="dot" id="micdot"></span>Microphone <span class="r" id="micstate">off</span></h2>
+      <div id="transcript"><span class="interim">Say “go to wikipedia”</span></div>
+      <div class="row">
+        <button class="primary" id="micbtn">Start mic</button>
+        <button id="undo">Back</button>
+        <button id="resnap">Rescan page</button>
+        <button id="reopen">Open browser</button>
+      </div>
+      <form id="cmdform" class="row" style="margin-top:12px">
+        <input type="text" id="cmd" placeholder="Type a command" autocomplete="off" />
+        <button type="submit">Run</button>
+      </form>
+      <div id="pending"></div>
+      <p class="small" style="margin:12px 0 0">Voice needs Chrome or Edge. Typing works anywhere.</p>
+    </section>
+
+    <section id="headcard">
+      <details open>
+        <summary>Eye control <span class="small" id="headstate" style="margin-left:auto">off</span></summary>
+        <div class="headwrap">
+          <video id="headvideo" playsinline muted></video>
+          <canvas id="headcanvas" width="320" height="240"></canvas>
+          <div id="dwellring"><svg viewBox="0 0 44 44"><circle class="bg" cx="22" cy="22" r="18"/><circle class="fg" cx="22" cy="22" r="18"/></svg></div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button id="headtoggle">Enable eye control</button>
+          <button id="headrecal">Re-center</button>
+        </div>
+        <div class="settings">
+          <label for="headmode">Tracking</label>
+          <select id="headmode">
+            <option value="eye">Eyes (precise)</option>
+            <option value="blend">Eyes and head (steadier)</option>
+            <option value="head">Head only (coarse)</option>
+          </select>
+          <label for="headclick">Click</label>
+          <select id="headclick">
+            <option value="pinch">Pinch</option>
+            <option value="both">Pinch or dwell</option>
+            <option value="dwell">Dwell</option>
+          </select>
+          <label for="headsens">Sensitivity</label>
+          <div class="ctl"><input type="range" id="headsens" min="0.4" max="2.5" step="0.1" value="1" /><span id="headsensv">1.0</span></div>
+          <label for="headdwell">Dwell time</label>
+          <div class="ctl"><input type="range" id="headdwell" min="400" max="2000" step="50" value="900" /><span id="headdwellv">900ms</span></div>
+          <div class="full row">
+            <label><input type="checkbox" id="headmirror" checked /> Mirror</label>
+            <label><input type="checkbox" id="showvideo" checked /> Show video</label>
+          </div>
+        </div>
+        <p class="small" style="margin:12px 0 0">Move your eyes to steer the cursor, hold still to click. Risky buttons still need a spoken “confirm”.</p>
+      </details>
+    </section>
+
+    <section class="grow">
+      <h2>Log</h2>
+      <div class="log scroll" id="log"></div>
+    </section>
+  </div>
+
+  <!-- decision -->
+  <div class="col">
+    <section>
+      <h2>Decision <span class="r" id="decmeta">–</span></h2>
+      <div id="verdict" class="verdict wait">Waiting for speech</div>
+      <table id="reasons"><thead><tr><th>Gate</th><th>Value</th><th>Threshold</th><th>Note</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section>
+      <div class="two">
+        <div>
+          <h3 style="margin-top:0">Intent <span class="r" id="intentconf"></span></h3>
+          <div id="intent"></div>
+          <h3>Yes/no signals</h3>
+          <div id="nouls"></div>
+          <h3>Scroll amount</h3>
+          <div id="scroll"></div>
+        </div>
+        <div>
+          <h3 style="margin-top:0">Target element <span class="r" id="targetconf"></span></h3>
+          <div id="target"></div>
+          <h3>Site</h3>
+          <div id="site"></div>
+          <h3>Text candidates</h3>
+          <div id="spans"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- page -->
+  <div class="col">
+    <section>
+      <h2>Controlled page <span class="r" id="tabs"></span></h2>
+      <dl class="kv">
+        <dt>URL</dt><dd id="url" class="mono">–</dd>
+        <dt>Title</dt><dd id="title">–</dd>
+        <dt>Site</dt><dd id="site-name">–</dd>
+        <dt>Search box</dt><dd id="sbox" class="mono">–</dd>
+      </dl>
+    </section>
+    <section class="grow">
+      <h2>Elements sent to model <span class="r" id="elcount"></span></h2>
+      <div class="scroll" id="elements"></div>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+import { HeadTracker } from "/head-tracker.js";
+
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const fmt = (x, d = 2) => (x == null ? "–" : Number(x).toFixed(d));
+  let ws;
+  let ui = null;
+  let hotIds = new Set();
+  let candIds = new Set();
+
+  // ------------------------------------------------------------ websocket
+  function connect() {
+    ws = new WebSocket(`ws://${location.host}`);
+    ws.onopen = () => { $("ws").textContent = "Connected"; $("ws").classList.add("ok"); };
+    ws.onclose = () => { $("ws").textContent = "Reconnecting"; $("ws").classList.remove("ok"); setTimeout(connect, 1000); };
+    ws.onmessage = (ev) => {
+      const { type, payload } = JSON.parse(ev.data);
+      switch (type) {
+        case "hello": ui = payload; renderAll(); break;
+        case "transcript": renderTranscript(payload); break;
+        case "decision": renderDecision(payload); break;
+        case "action": ui = payload.ui; renderStats(); renderSnapshot(); break;
+        case "snapshot": ui && (ui.snapshot = payload); renderSnapshot(); break;
+        case "log": appendLog(payload); break;
+        case "candidates": candIds = new Set((payload || []).map((c) => c.id)); renderSnapshot(); break;
+        case "pending": $("pending").textContent = payload ? `Pending: ${payload.summary} — say "confirm" or "cancel"` : ""; break;
+        case "tabs": $("tabs").textContent = `${payload.length} tab${payload.length === 1 ? "" : "s"}`; break;
+      }
+    };
+  }
+  const send = (obj) => ws && ws.readyState === 1 && ws.send(JSON.stringify(obj));
+
+  // ------------------------------------------------------------ render
+  function renderAll() {
+    $("model").textContent = ui.model;
+    renderStats(); renderSnapshot();
+    $("log").innerHTML = "";
+    (ui.log || []).forEach(appendLog);
+    if (ui.lastDecision) renderDecision(ui.lastDecision);
+    if (ui.pending) $("pending").textContent = `Pending: ${ui.pending.summary} — say "confirm" or "cancel"`;
+  }
+  function renderStats() {
+    const s = ui.stats;
+    $("lat").textContent = s.lastLatencyMs ?? "–";
+    $("p50").textContent = s.p50LatencyMs ?? "–";
+    $("calls").textContent = s.calls;
+    $("actions").textContent = s.actions;
+    $("cost").textContent = "$" + s.costUsd.toFixed(6);
+    $("c2a").textContent = s.avgCommandToActionMs ?? "–";
+    $("c2d").textContent = s.avgDecisionMs ?? "–";
+    $("model").textContent = ui.model;
+  }
+  function renderSnapshot() {
+    const sn = ui && ui.snapshot; if (!sn) return;
+    $("url").textContent = sn.url; $("title").textContent = sn.title || "–"; $("site-name").textContent = sn.site;
+    $("sbox").textContent = sn.searchBoxId || "none";
+    $("elcount").textContent = `${sn.elements.length}`;
+    if (sn.tabs) $("tabs").textContent = `${sn.tabs.length} tab${sn.tabs.length === 1 ? "" : "s"}`;
+    const rows = sn.elements.map((e) => {
+      const cls = hotIds.has(e.id) ? " hot" : candIds.has(e.id) ? " cand" : "";
+      return `<div class="el${cls}"><span class="id">${e.id}</span><span class="role">${e.role}${e.below_fold ? " ↓" : ""}</span><span class="txt" title="${esc(e.href || "")}">${esc(e.text || e.placeholder || "")}</span></div>`;
+    });
+    $("elements").innerHTML = rows.join("");
+    const hot = $("elements").querySelector(".hot"); if (hot) hot.scrollIntoView({ block: "center" });
+  }
+  function renderTranscript(p) {
+    const el = $("transcript");
+    el.className = p.actedOn ? "acted" : "";
+    el.innerHTML = p.final ? esc(p.text) : `${esc(p.text)} <span class="interim">…</span>`;
+  }
+  function bars(container, probs, winner, opts = {}) {
+    const entries = Object.entries(probs || {}).sort((a, b) => b[1] - a[1]).slice(0, opts.max || 7);
+    container.innerHTML = entries.map(([k, p]) => {
+      const win = k === winner;
+      const label = opts.labels ? (opts.labels[k] || k) : k;
+      return `<div class="bar"><span class="lbl${win ? " win" : ""}" title="${esc(label)}">${esc(label)}</span><div class="track"><div class="fill${win ? " win" : ""}${opts.noul ? " noul" : ""}" style="width:${Math.round(p * 100)}%"></div></div><span class="num">${fmt(p)}</span></div>`;
+    }).join("");
+  }
+  function renderDecision(d) {
+    const a = d.answers, pol = d.policy;
+    $("decmeta").textContent = `${d.latencyMs} ms, ${d.questionCount} questions, ${d.usage?.input_tokens ?? "?"} tokens, $${(d.costUsd || 0).toFixed(6)}, ${d.trigger}`;
+    const v = $("verdict"); v.className = `verdict ${pol.decision}`;
+    v.textContent = `${pol.decision}: ${pol.summary}` + (d.silentMs > 500 ? ` (silent ${d.silentMs}ms)` : "");
+    $("reasons").querySelector("tbody").innerHTML = (pol.reasons || []).map((r) =>
+      `<tr><td>${esc(r.name)}</td><td class="${r.pass ? "pass" : "fail"}">${esc(String(r.value))}</td><td>${esc(String(r.threshold))}</td><td class="small">${esc(r.note || "")}</td></tr>`).join("");
+
+    $("intentconf").textContent = `confidence ${fmt(a.intent?.confidence)}`;
+    bars($("intent"), a.intent?.probabilities, a.intent?.choice);
+
+    const labels = {}; (ui?.snapshot?.elements || []).forEach((e) => (labels[e.id] = `${e.id} ${e.text || e.placeholder || e.role}`));
+    labels.none = "none";
+    $("targetconf").textContent = `confidence ${fmt(a.target?.confidence)}`;
+    bars($("target"), a.target?.probabilities, a.target?.choice, { labels, max: 6 });
+    hotIds = new Set(Object.entries(a.target?.probabilities || {}).filter(([k, p]) => k !== "none" && p >= 0.15).map(([k]) => k));
+    renderSnapshot();
+
+    const nouls = { is_command: a.is_command?.noul, complete: a.complete?.noul, destructive: a.destructive?.noul };
+    $("nouls").innerHTML = Object.entries(nouls).map(([k, p]) =>
+      `<div class="bar"><span class="lbl">${k}</span><div class="track"><div class="fill noul" style="width:${Math.round((p || 0) * 100)}%"></div></div><span class="num">${fmt(p)}</span></div>`).join("");
+
+    if (a.scroll_amount) bars($("scroll"), a.scroll_amount.probabilities, String(Math.round(a.scroll_amount.score)), { labels: { 0: "a little", 1: "one page", 2: "to the end" } });
+    bars($("site"), a.site?.probabilities, a.site?.choice, { max: 5 });
+
+    let spans = "";
+    if (a.text_span) spans += `<div class="small">text_span</div>` + barsHtml(a.text_span.probabilities, a.text_span.choice);
+    if (a.url_span) spans += `<div class="small">url_span</div>` + barsHtml(a.url_span.probabilities, a.url_span.choice);
+    $("spans").innerHTML = spans || `<div class="small">no text/url candidates in transcript</div>`;
+  }
+  function barsHtml(probs, winner) {
+    const tmp = document.createElement("div"); bars(tmp, probs, winner, { max: 6 }); return tmp.innerHTML;
+  }
+  function appendLog(e) {
+    const div = document.createElement("div");
+    div.className = e.level;
+    const t = new Date(e.t).toLocaleTimeString([], { hour12: false });
+    div.textContent = `${t} ${e.msg}`;
+    const log = $("log"); log.appendChild(div);
+    while (log.children.length > 150) log.removeChild(log.firstChild);
+    log.scrollTop = log.scrollHeight;
+  }
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  // ------------------------------------------------------------ controls
+  $("cmdform").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const text = $("cmd").value.trim(); if (!text) return;
+    send({ type: "command", text });
+    renderTranscript({ text, final: true, actedOn: false });
+    $("cmd").value = "";
+  });
+  $("undo").onclick = () => send({ type: "undo" });
+  $("resnap").onclick = () => send({ type: "snapshot" });
+  $("reopen").onclick = async () => {
+    $("reopen").disabled = true;
+    $("reopen").textContent = "Opening…";
+    try {
+      const r = await fetch("/api/browser/reopen", { method: "POST" });
+      const j = await r.json();
+      $("reopen").textContent = j.ok ? "Browser ready" : "Failed";
+      setTimeout(() => { $("reopen").textContent = "Open browser"; }, 2000);
+    } catch {
+      $("reopen").textContent = "Failed";
+      setTimeout(() => { $("reopen").textContent = "Open browser"; }, 2000);
+    } finally {
+      $("reopen").disabled = false;
+    }
+  };
+
+  // ------------------------------------------------------------ speech
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, micOn = false, utteranceBase = 0;
+  function startMic() {
+    if (!SR) { alert("Web Speech API not available. Use Chrome or Edge, or type commands below."); return; }
+    rec = new SR();
+    rec.continuous = true; rec.interimResults = true; rec.lang = "en-US"; rec.maxAlternatives = 1;
+    rec.onresult = (ev) => {
+      // Results before ev.resultIndex are finished. Each result index is a distinct utterance.
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const r = ev.results[i];
+        const text = r[0].transcript;
+        send({ type: "transcript", text, final: r.isFinal, utteranceId: `u${utteranceBase}-${i}` });
+      }
+    };
+    rec.onerror = (e) => { $("micstate").textContent = "error: " + e.error; if (e.error === "not-allowed") stopMic(); };
+    rec.onend = () => { if (micOn) { utteranceBase += 1; try { rec.start(); } catch {} } };
+    rec.start();
+    micOn = true; $("micdot").classList.add("on"); $("micstate").textContent = "listening"; $("micbtn").textContent = "Stop mic"; $("micbtn").classList.remove("primary");
+  }
+  function stopMic() {
+    micOn = false; try { rec && rec.stop(); } catch {}
+    $("micdot").classList.remove("on"); $("micstate").textContent = "off"; $("micbtn").textContent = "Start mic"; $("micbtn").classList.add("primary");
+  }
+  $("micbtn").onclick = () => (micOn ? stopMic() : startMic());
+
+  $("showvideo").onchange = (e) => tracker.update({ showVideo: e.target.checked });
+
+  // ------------------------------------------------------------ head tracking
+  const tracker = new HeadTracker({
+    video: $("headvideo"),
+    canvas: $("headcanvas"),
+    onStatus: (s) => {
+      const el = $("headstate");
+      const base = s.state === "running" ? (s.face === false ? "no face" : "tracking") : s.state;
+      el.textContent = s.pinching ? "pinch — click!" : base;
+      el.style.color = s.state === "error" ? "var(--red)" : s.pinching ? "var(--accent)" : s.state === "running" ? "var(--green)" : "var(--muted)";
+      if (s.message) $("headstate").title = s.message;
+      $("headtoggle").textContent = tracker.running ? "Disable eye control" : "Enable eye control";
+    },
+    onPoint: (p) => {
+      send({ type: "pointer", x: p.x, y: p.y });
+    },
+    onActivate: (a) => {
+      const ring = $("dwellring");
+      ring.style.opacity = a.dwelling ? "1" : "0";
+      ring.style.setProperty("--p", String(a.progress || 0));
+      if (a.click) send({ type: "pointer", x: a.click.x, y: a.click.y, click: true });
+    },
+  });
+
+  $("headtoggle").onclick = async () => {
+    if (tracker.running) { tracker.stop(); return; }
+    $("headstate").textContent = "starting…";
+    const r = await tracker.start();
+    if (!r.ok) $("headstate").textContent = "unavailable";
+  };
+  $("headrecal").onclick = () => tracker.recalibrate();
+  $("headmode").onchange = (e) => {
+    tracker.update({ mode: e.target.value });
+    tracker.recalibrate(); // new mode => new neutral pose
+  };
+  $("headclick").onchange = (e) => {
+    tracker.update({ clickMode: e.target.value });
+    if (e.target.value !== "dwell") tracker.loadHands();
+  };
+  $("headsens").oninput = (e) => {
+    $("headsensv").textContent = Number(e.target.value).toFixed(1);
+    tracker.update({ sensitivity: Number(e.target.value) });
+  };
+  $("headdwell").oninput = (e) => {
+    $("headdwellv").textContent = `${e.target.value}ms`;
+    tracker.update({ dwellMs: Number(e.target.value) });
+  };
+  $("headmirror").onchange = (e) => tracker.update({ mirror: e.target.checked });
+
+  connect();
+})();
+</script>
+</body>
+</html>

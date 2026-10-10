@@ -1,0 +1,16 @@
+node_modules/
+.browser-profile/
+.env
+.env.*
+!.env.example
+*.log
+test-results/
+.browser-profile*/
+server.log
+server.err.log
+models/
+*.gguf
+dist/
+installer/runtime/
+.probe-profile/
+AGENTS.md

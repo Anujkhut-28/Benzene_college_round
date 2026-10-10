@@ -1,0 +1,31 @@
+{
+  "name": "handsfree",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "HandsFree: accessibility-focused hands-free web browsing. Voice navigation with an embedded local decision model, plus webcam head-tracking cursor control and dwell-to-click. No API key required.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "demo": "node scripts/demo.js",
+    "demo:ci": "node scripts/demo.js --headless",
+    "test": "node --test test/unit/*.test.js",
+    "test:integration": "node --test test/integration/*.test.js",
+    "test:all": "node --test test/unit/*.test.js test/integration/*.test.js",
+    "doctor": "node scripts/doctor.js"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0",
+    "express": "^4.19.2",
+    "node-llama-cpp": "^3.22.1",
+    "playwright": "^1.47.0",
+    "ws": "^8.18.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moritzkremb/jev-voice-browser.git"
+  }
+}
