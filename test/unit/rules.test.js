@@ -164,6 +164,40 @@ test("recognizes ordinals for element picking", () => {
   assert.equal(recognize("click sign in").ordinal, undefined);
 });
 
+test("'show numbers' numbers the page however it is phrased", () => {
+  for (const p of [
+    "show numbers",
+    "show me the numbers",
+    "show the numbers",
+    "show number",
+    "number the page",
+    "number the links",
+    "number the buttons",
+    "number everything",
+    "show the numbered list",
+    "give me the numbers",
+    "show me the links",
+    "list the links",
+    "list the buttons",
+    "what can i click",
+  ]) {
+    assert.equal(intentOf(p), "show_numbers", `"${p}" should ask for the page to be numbered`);
+  }
+  for (const p of ["hide numbers", "hide the numbers", "clear the numbers", "no numbers", "numbers off"]) {
+    assert.equal(intentOf(p), "hide_numbers", `"${p}" should clear the numbering`);
+  }
+});
+
+test("'show numbers' does not swallow real navigation or scrolling", () => {
+  assert.equal(intentOf("show me google"), "navigate_url");
+  assert.equal(intentOf("open youtube"), "navigate_url");
+  assert.equal(intentOf("show more"), "scroll_down");
+  assert.equal(intentOf("scroll to the bottom"), "scroll_down");
+  assert.equal(intentOf("click the first link"), "click_element");
+  assert.equal(intentOf("search for cats"), "search_web");
+  assert.equal(intentOf("type hello in the search box"), "type_into_field");
+});
+
 test("search accepts every verb and optional site phrase", () => {
   const forms = [
     "search for cats",

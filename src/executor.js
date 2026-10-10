@@ -7,6 +7,13 @@ import { describe } from "./policy.js";
 
 const NAV_TIMEOUT = 15000;
 
+// What "show numbers" is willing to badge. Deliberately the same shape as the overlay's snap
+// targets so a numbered badge and a snap target can never disagree about what is clickable.
+const NUMBERABLE_SELECTOR =
+  "a[href],button,input:not([type=hidden]),textarea,select,summary,[role=button],[role=link]," +
+  "[role=menuitem],[role=checkbox],[role=radio],[role=switch],[role=searchbox],[role=combobox]," +
+  "[role=tab],[role=option],[role=textbox]";
+
 function locatorFor(page, id) {
   return page.locator(`[data-vb-id="${id}"]`).first();
 }
@@ -33,6 +40,43 @@ export async function execute(action, browser) {
   const label = describe(action);
 
   switch (action.type) {
+    case "show_numbers": {
+      // Re-read the page here rather than trusting the snapshot the policy saw: the user asked
+      // for this a moment ago and the DOM may have moved on since.
+      const numbered = await page
+        .evaluate((sel) => {
+          const items = [];
+          let n = 0;
+          for (const el of document.querySelectorAll(sel)) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 4 || r.height < 4) continue;
+            const st = getComputedStyle(el);
+            if (st.visibility === "hidden" || st.display === "none" || Number(st.opacity) === 0) continue;
+            const text =
+              `${el.textContent || ""} ${el.getAttribute("aria-label") || ""} ` +
+              `${el.getAttribute("placeholder") || ""} ${el.value || ""} ${el.getAttribute("name") || ""}`
+                .replace(/\s+/g, " ")
+                .trim();
+            let id = el.getAttribute("data-vb-id");
+            if (!id) {
+              window.__vbNextId = window.__vbNextId || 1;
+              id = `vb${window.__vbNextId++}`;
+              el.setAttribute("data-vb-id", id);
+            }
+            items.push({ n: ++n, id, label: text.slice(0, 60) || id, role: el.tagName.toLowerCase() });
+            if (n >= 60) break; // 60 badges is already a wall of numbers
+          }
+          return items;
+        }, NUMBERABLE_SELECTOR)
+        .catch(() => []);
+      return { ok: true, detail: `numbered ${numbered.length} items`, numbered };
+    }
+
+    case "hide_numbers": {
+      await browser.overlay("clearCandidates");
+      return { ok: true, detail: "numbers hidden" };
+    }
+
     case "navigate_url": {
       await browser.overlay("toast", `→ ${label}`);
       const host = new URL(action.url).hostname.replace(/^www\./, "");

@@ -31,6 +31,10 @@ const RULES = [
   { intent: "scroll_down", re: /^(scroll |page |swipe |jump )?down( a (bit|little))?$|^scroll down$|^go (further |farther |down )*down$|^down( a (bit|little))?$|^more$|^keep going$|^continue down$|^see more$|^show more$|^scroll to the (bottom|end)$|^go to the (bottom|end)$|^bottom of the page$|^jump to the (bottom|end)$|^all the way down$|^read (more|on)$|^next( screen| page)?$/ },
   { intent: "scroll_up", re: /^(scroll |page |swipe |jump )?up( a (bit|little))?$|^scroll up$|^go (back )?up$|^up( a (bit|little))?$|^less$|^keep going up$|^continue up$|^scroll to the top$|^go to the top$|^back to the top$|^jump to the top$|^top of the page$|^read (less|earlier)$|^previous (screen| page)$/ },
   { intent: "navigate_url", url: "https://example.com/", re: /^(go |take me )?back to (the )?(home|homepage|start)$|^go home$|^take me home$|^go to (the )?home ?page$|^home page$/ },
+  // Number every clickable thing on the page so the user can aim by number instead of by name.
+  // The most reliable click available: it does not depend on the model matching words to an element.
+  { intent: "show_numbers", re: /^(show|list|give me|display|put)?\s*(me\s+)?(the\s+)?(numbers?|numbering|numbered list)$|^number (the )?(page|links|buttons|things|items|options)$|^number (everything|it all|them)$|^show (me )?(the )?links$|^what (can|do) i click$|^list (me )?(the )?(links|buttons|things|items|options)$/ },
+  { intent: "hide_numbers", re: /^(hide|clear|remove|get rid of|take away)\s*(the )?(numbers|numbering|numbered list)$|^hide (the )?numbers$|^no numbers$|^numbers off$/ },
 ];
 
 const SITE_WORDS = {

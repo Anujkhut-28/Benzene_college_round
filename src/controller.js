@@ -3,7 +3,7 @@
  * policy -> Playwright action -> fresh snapshot. Emits events for the UI / demo / tests.
  */
 import { EventEmitter } from "node:events";
-import { DEBOUNCE_MS, SILENCE_COMPLETE_MS, CANDIDATE_TTL_MS, MAX_INFLIGHT, MAX_CONTEXT_ACTIONS, MODEL, T } from "./constants.js";
+import { DEBOUNCE_MS, SILENCE_COMPLETE_MS, CANDIDATE_TTL_MS, MAX_INFLIGHT, MAX_CONTEXT_ACTIONS, MODEL, T, isDestructiveElement } from "./constants.js";
 
 /**
  * How long an in-flight decision may run before we stop cancelling it in favour of a newer
@@ -130,6 +130,19 @@ export class Controller extends EventEmitter {
         this._consume(this.utterance, clean);
         this._log("info", `picked candidate ${n} (${c.label}) by number — no model call`);
         const action = { ...this.candidates.intent, targetId: c.id, label: c.label };
+        // Picking by number skips evaluatePolicy, so the destructive gate has to be applied
+        // here too: "show numbers" then "click 3" must not be a way around saying "confirm".
+        if (action.type === "click_element") {
+          const el = (this.snapshot?.elements ?? []).find((e) => e.id === c.id);
+          if (isDestructiveElement(el)) {
+            this.pending = action;
+            // handleTranscript is sync, so this is fire-and-forget like the _runAction below.
+            this.browser.overlay("toast", `Say "confirm" to click ${c.label}`, 5000).catch(() => {});
+            this.emit("pending", { action, summary: `confirm to click ${c.label}` });
+            this._scheduleSilenceRetry(this.utterance);
+            return;
+          }
+        }
         this.candidates = null;
         this._runAction(action, { via: "candidate-pick" });
         return;
@@ -257,12 +270,13 @@ export class Controller extends EventEmitter {
       `${result.latencyMs}ms · "${textAtRequest}" → ${policy.decision}: ${policy.summary}`,
     );
 
+    let actionResult = null;
     switch (policy.decision) {
       case "act":
         this._consume(utt, textAtRequest);
         if (policy.action.confirmed) this.pending = null;
         this.candidates = null;
-        await this._runAction(policy.action, { decision, utterance: utt });
+        actionResult = await this._runAction(policy.action, { decision, utterance: utt });
         break;
       case "confirm":
         this._consume(utt, textAtRequest);
@@ -290,6 +304,18 @@ export class Controller extends EventEmitter {
         break;
       default:
         break;
+    }
+
+    // "show numbers" is answered after the action runs, because the executor re-reads the live
+    // DOM and reports what it actually badged. The overlay and the spoken number must agree, so
+    // the list only becomes pickable once we know it.
+    if (policy.action?.type === "show_numbers" && actionResult?.numbered?.length) {
+      const list = actionResult.numbered;
+      this.candidates = { list, intent: { type: "click_element" }, at: Date.now() };
+      await this.browser.overlay("candidates", list, CANDIDATE_TTL_MS);
+      await this.browser.overlay("toast", `Numbered ${list.length}. Say "click" and a number.`, 4000);
+      this.emit("candidates", list);
+      this._scheduleSilenceRetry(utt);
     }
   }
 
@@ -332,9 +358,11 @@ export class Controller extends EventEmitter {
       };
       this._log(res.ok ? "act" : "warn", `${res.ok ? "✓" : "✗"} ${describe(action)} — decided ${decisionMs ?? "?"}ms after last word, executed in ${took}ms ${res.detail || ""}`);
       this.emit("action", entry);
+      return res;
     } catch (err) {
       this._log("error", `action failed: ${describe(action)} — ${err.message || err}`);
       this.emit("action", { action, ok: false, detail: String(err.message || err) });
+      return null;
     } finally {
       this.busy = false;
       await this.refreshSnapshot().catch(() => {});

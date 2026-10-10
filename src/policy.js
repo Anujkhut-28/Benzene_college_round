@@ -260,6 +260,14 @@ function buildAction({ intentName, answers, candidates, snapshot, reasons, exclu
       return { decision: "act", action: { type: "navigate_url", url: fillTemplate(SITE_SEARCH[DEFAULT_SEARCH_ENGINE], query), label: `search: ${query}`, query } };
     }
 
+    case "show_numbers":
+      // Deliberately does not touch the elements list here: the controller numbers whatever the
+      // snapshot holds, so the overlay and the spoken number always agree on the same ordering.
+      return { decision: "act", action: { type: "show_numbers", label: "numbered the page" } };
+
+    case "hide_numbers":
+      return { decision: "act", action: { type: "hide_numbers", label: "hid the numbers" } };
+
     case "click_element":
     case "select_option":
     case "type_into_field": {
