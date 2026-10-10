@@ -13,7 +13,22 @@ import { Controller } from "./controller.js";
 import { hasApiKey, BACKEND } from "./jev.js";
 import { MODEL, QUESTIONS, T } from "./constants.js";
 
+import { spawn } from "node:child_process";
+import { platform } from "node:os";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// The control page needs Chrome/Edge for the mic, so hand it to the OS default.
+export function openCommand(url, os = platform()) {
+  if (os === "win32") return { file: "cmd", args: ["/c", "start", "", url] };
+  if (os === "darwin") return { file: "open", args: [url] };
+  return { file: "xdg-open", args: [url] };
+}
+
+function openControlPage(url) {
+  const cmd = openCommand(url);
+  spawn(cmd.file, cmd.args, { detached: true, stdio: "ignore" }).unref();
+}
 
 export function parseArgs(argv) {
   const out = {
@@ -153,6 +168,7 @@ export async function startServer(opts = {}) {
   const host = opts.host || "127.0.0.1";
   await new Promise((resolve) => server.listen(opts.port, host, resolve));
   const url = `http://localhost:${opts.port}`;
+  if (!opts.headless) openControlPage(url);
   if (host !== "127.0.0.1" && host !== "localhost") {
     console.warn(`WARNING: listening on ${host} — anyone who can reach this port can control the browser and spend API credits.`);
   }
