@@ -35,6 +35,10 @@ const RULES = [
   // The most reliable click available: it does not depend on the model matching words to an element.
   { intent: "show_numbers", re: /^(show|list|give me|display|put)?\s*(me\s+)?(the\s+)?(numbers?|numbering|numbered list)$|^number (the )?(page|links|buttons|things|items|options)$|^number (everything|it all|them)$|^show (me )?(the )?links$|^what (can|do) i click$|^list (me )?(the )?(links|buttons|things|items|options)$/ },
   { intent: "hide_numbers", re: /^(hide|clear|remove|get rid of|take away)\s*(the )?(numbers|numbering|numbered list)$|^hide (the )?numbers$|^no numbers$|^numbers off$/ },
+  // The mic is always on by default, which picks up the room. Let the user turn it off without
+  // reaching for the mouse, and back on again when they are ready.
+  { intent: "stop_listening", re: /^(stop|pause|halt|shut up|be quiet|quiet)\s*(listening|the mic|hearing me|voice)?$|^stop listening$|^pause listening$|^stop hearing me$|^(mute|unlisten)$/ },
+  { intent: "start_listening", re: /^(start|resume|unpause|continue)\s*(listening|the mic|hearing me|voice)?$|^start listening$|^resume listening$|^listen( again)?$|^wake up$/ },
 ];
 
 const SITE_WORDS = {

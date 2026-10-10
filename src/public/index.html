@@ -159,7 +159,14 @@
         <button id="undo">Back</button>
         <button id="resnap">Rescan page</button>
         <button id="reopen">Open browser</button>
+        <label style="margin-left:auto;display:flex;gap:6px;align-items:center">
+          <input type="checkbox" id="speech" checked /> Speak replies
+        </label>
       </div>
+      <p class="small" style="margin:8px 0 0">
+        Say <b>“stop listening”</b> / <b>“start listening”</b> to mute yourself, and
+        <b>“show numbers”</b> to badge every link and button, then <b>“click 12”</b>.
+      </p>
       <form id="cmdform" class="row" style="margin-top:12px">
         <input type="text" id="cmd" placeholder="Type a command" autocomplete="off" />
         <button type="submit">Run</button>
@@ -284,10 +291,36 @@ import { HeadTracker } from "/head-tracker.js";
         case "candidates": candIds = new Set((payload || []).map((c) => c.id)); renderSnapshot(); break;
         case "pending": $("pending").textContent = payload ? `Pending: ${payload.summary} — say "confirm" or "cancel"` : ""; break;
         case "tabs": $("tabs").textContent = `${payload.length} tab${payload.length === 1 ? "" : "s"}`; break;
+        case "mic": payload.on ? startMic() : stopMic(); break;
+        case "say": say(payload.text, payload.priority); break;
       }
     };
   }
   const send = (obj) => ws && ws.readyState === 1 && ws.send(JSON.stringify(obj));
+
+  // ------------------------------------------------------------ spoken feedback
+  // Everything else reports back with a visual toast, which is no use to someone who cannot
+  // see the screen. Prompts, confirmations and failures are spoken as well.
+  const synth = window.speechSynthesis;
+  let speakOn = $("speech") ? $("speech").checked : true;
+  const voiceFor = (lang) => {
+    if (!synth) return null;
+    const v = synth.getVoices().find((x) => x.lang?.replace("_", "-") === lang);
+    return v || synth.getVoices().find((x) => x.lang?.startsWith(lang.split("-")[0])) || null;
+  };
+  function say(text, priority) {
+    if (!synth || !speakOn || !text) return;
+    try {
+      // A high-priority prompt should cut off whatever is still talking.
+      if (priority === "high") synth.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      const v = voiceFor(rec ? rec.lang : "en-US");
+      if (v) u.voice = v;
+      u.rate = 1.05;
+      u.pitch = 1;
+      synth.speak(u);
+    } catch {}
+  }
 
   // ------------------------------------------------------------ render
   function renderAll() {
@@ -430,6 +463,11 @@ import { HeadTracker } from "/head-tracker.js";
     $("micdot").classList.remove("on"); $("micstate").textContent = "off"; $("micbtn").textContent = "Start mic"; $("micbtn").classList.add("primary");
   }
   $("micbtn").onclick = () => (micOn ? stopMic() : startMic());
+  $("speech").onchange = (e) => {
+    speakOn = e.target.checked;
+    if (!speakOn && synth) synth.cancel();
+    else if (speakOn) say("Spoken replies on.");
+  };
 
   $("showvideo").onchange = (e) => tracker.update({ showVideo: e.target.checked });
 

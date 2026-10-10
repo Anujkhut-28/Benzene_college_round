@@ -128,13 +128,33 @@ export function toHttpUrl(domainish) {
   return `https://${v}`;
 }
 
-const NUMBER_WORDS = {
-  one: 1, first: 1, "1": 1, "1st": 1,
-  two: 2, second: 2, "2": 2, "2nd": 2,
-  three: 3, third: 3, "3": 3, "3rd": 3,
-  four: 4, fourth: 4, "4": 4, "4th": 4,
-  five: 5, fifth: 5, "5": 5, "5th": 5,
+const CARDINALS = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+  "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+];
+const TENS = { twenty: 20, thirty: 30, forty: 40, fourty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const ORDINALS = {
+  first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10,
+  eleventh: 11, twelfth: 12, thirteenth: 13, fourteenth: 14, fifteenth: 15, sixteenth: 16,
+  seventeenth: 17, eighteenth: 18, nineteenth: 19, twentieth: 20,
 };
+// Ordinal suffixes are irregular, so list them rather than deriving them.
+const SUFFIX = { 1: "st", 2: "nd", 3: "rd" };
+
+// Numbered overlays badge up to 60 elements, so picking has to work well past five: "click 14"
+// and "click twenty three" are the ordinary cases here, not "click three".
+const NUMBER_WORDS = (() => {
+  const m = {};
+  CARDINALS.forEach((w, i) => {
+    m[w] = i;
+    m[String(i)] = i;
+  });
+  for (const [w, n] of [...Object.entries(TENS), ...Object.entries(ORDINALS)]) {
+    m[w] = n;
+    m[`${n}${SUFFIX[n] ?? "th"}`] = n;
+  }
+  return m;
+})();
 // Speech-recognizer homophones, only trusted when they are the whole utterance ("to" alone).
 const NUMBER_HOMOPHONES = { won: 1, to: 2, too: 2, for: 4 };
 
@@ -151,11 +171,28 @@ export function parseCandidatePick(transcript, max = 5) {
   const t = cleanTranscript(transcript).toLowerCase().replace(/[.,!?]/g, "");
   if (!t) return null;
   const meaningful = t.split(" ").filter((w) => !PICK_STOPWORDS.has(w));
-  if (meaningful.length === 0 || meaningful.length > 2) return null;
+  if (meaningful.length === 0 || meaningful.length > 3) return null;
+
+  // A literal digit is unambiguous and must win outright, or "click 14" reads as "one, four".
   for (const w of meaningful) {
-    const n = NUMBER_WORDS[w];
-    if (n && n <= max) return n;
+    if (/^\d{1,3}$/.test(w)) {
+      const n = Number(w);
+      return n >= 1 && n <= max ? n : null;
+    }
   }
+
+  // Speech says "twenty three"; the recognizer does not hand us "23".
+  const words = meaningful.filter((w) => NUMBER_WORDS[w] != null);
+  if (words.length === 0) return null;
+  let total = 0;
+  for (const w of words) {
+    const n = NUMBER_WORDS[w];
+    if (total === 0) total = n;
+    else if (total % 10 === 0 && n < 10) total += n; // twenty + three
+    else break;
+  }
+  if (total >= 1 && total <= max) return total;
+
   if (meaningful.length === 1) {
     const n = NUMBER_HOMOPHONES[meaningful[0]];
     if (n && n <= max) return n;

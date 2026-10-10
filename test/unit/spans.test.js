@@ -56,3 +56,24 @@ test("candidate pick parsing", () => {
   assert.equal(parseCandidatePick("go to wikipedia"), null);
   assert.equal(parseCandidatePick(""), null);
 });
+
+test("candidate picks work past five, which is where numbered overlays actually live", () => {
+  // "show numbers" badges up to 60 elements, so picking has to reach past five.
+  for (const n of [6, 9, 14, 23, 47, 60]) {
+    assert.equal(parseCandidatePick(`click ${n}`, 60), n, `"click ${n}" should pick ${n}`);
+    assert.equal(parseCandidatePick(String(n), 60), n);
+  }
+  // Digits must win outright, or "click 14" is read as "one, then four".
+  assert.equal(parseCandidatePick("click 14", 60), 14);
+  // Speech says "twenty three"; the recognizer does not produce "23".
+  assert.equal(parseCandidatePick("click twenty three", 60), 23);
+  assert.equal(parseCandidatePick("twenty three", 60), 23);
+  assert.equal(parseCandidatePick("fifty five", 60), 55);
+  assert.equal(parseCandidatePick("the 30th", 60), 30);
+  assert.equal(parseCandidatePick("click the ninth", 60), 9);
+  // Out of range and non-numbers stay unpicked.
+  assert.equal(parseCandidatePick("click 61", 60), null);
+  assert.equal(parseCandidatePick("click 9", 5), null);
+  assert.equal(parseCandidatePick("click the sign in button", 60), null);
+  assert.equal(parseCandidatePick("0", 60), null);
+});

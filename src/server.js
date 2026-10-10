@@ -112,6 +112,10 @@ export async function startServer(opts = {}) {
   controller.on("candidates", (p) => broadcast("candidates", p));
   controller.on("pending", (p) => broadcast("pending", p));
   controller.on("tabs", (p) => broadcast("tabs", p));
+  // Spoken feedback and mic control are for the control page, which owns the recognizer and
+  // the speech synthesiser - neither lives in the controlled window.
+  controller.on("mic", (p) => broadcast("mic", p));
+  controller.on("say", (p) => broadcast("say", p));
 
   wss.on("connection", (ws) => {
     ws.send(JSON.stringify({ type: "hello", payload: controller.uiState() }));

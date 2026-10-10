@@ -268,6 +268,12 @@ function buildAction({ intentName, answers, candidates, snapshot, reasons, exclu
     case "hide_numbers":
       return { decision: "act", action: { type: "hide_numbers", label: "hid the numbers" } };
 
+    case "stop_listening":
+      return { decision: "act", action: { type: "set_mic", on: false, label: "stopped listening" } };
+
+    case "start_listening":
+      return { decision: "act", action: { type: "set_mic", on: true, label: "listening again" } };
+
     case "click_element":
     case "select_option":
     case "type_into_field": {

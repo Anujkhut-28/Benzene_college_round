@@ -139,6 +139,7 @@ export class Controller extends EventEmitter {
             // handleTranscript is sync, so this is fire-and-forget like the _runAction below.
             this.browser.overlay("toast", `Say "confirm" to click ${c.label}`, 5000).catch(() => {});
             this.emit("pending", { action, summary: `confirm to click ${c.label}` });
+            this.emit("say", { text: `That looks risky. Say confirm to click ${String(c.label).trim()}, or cancel.`, priority: "high" });
             this._scheduleSilenceRetry(this.utterance);
             return;
           }
@@ -276,6 +277,13 @@ export class Controller extends EventEmitter {
         this._consume(utt, textAtRequest);
         if (policy.action.confirmed) this.pending = null;
         this.candidates = null;
+        // The mic lives in the control page, not the controlled one, so this cannot be a
+        // Playwright action - it is a message back to the tab that owns the recognizer.
+        if (policy.action.type === "set_mic") {
+          this.emit("mic", { on: policy.action.on });
+          this._log("info", policy.action.on ? "listening again" : "stopped listening");
+          break;
+        }
         actionResult = await this._runAction(policy.action, { decision, utterance: utt });
         break;
       case "confirm":
@@ -283,6 +291,9 @@ export class Controller extends EventEmitter {
         this.pending = policy.action;
         await this.browser.overlay("toast", `Say "confirm" to ${describe(policy.action)}`, 6000);
         this.emit("pending", { action: policy.action, summary: policy.summary });
+        // The toast is invisible to someone who cannot see the screen, which is much of the
+        // audience this is for. Say it.
+        this.emit("say", { text: `Say confirm to ${describe(policy.action)}`, priority: "high" });
         break;
       case "cancel":
         this._consume(utt, textAtRequest);
@@ -296,6 +307,7 @@ export class Controller extends EventEmitter {
         await this.browser.overlay("candidates", list, CANDIDATE_TTL_MS);
         await this.browser.overlay("toast", "Which one? Say the number.", 3000);
         this.emit("candidates", list);
+        this.emit("say", { text: `Which one? There are ${list.length}. Say the number.` });
         this._scheduleSilenceRetry(utt);
         break;
       }
@@ -315,6 +327,7 @@ export class Controller extends EventEmitter {
       await this.browser.overlay("candidates", list, CANDIDATE_TTL_MS);
       await this.browser.overlay("toast", `Numbered ${list.length}. Say "click" and a number.`, 4000);
       this.emit("candidates", list);
+      this.emit("say", { text: `Numbered ${list.length}. Say click and a number.` });
       this._scheduleSilenceRetry(utt);
     }
   }
@@ -362,6 +375,7 @@ export class Controller extends EventEmitter {
     } catch (err) {
       this._log("error", `action failed: ${describe(action)} — ${err.message || err}`);
       this.emit("action", { action, ok: false, detail: String(err.message || err) });
+      this.emit("say", { text: `Sorry, that did not work. ${describe(action)} failed.`, priority: "high" });
       return null;
     } finally {
       this.busy = false;
