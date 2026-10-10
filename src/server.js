@@ -60,6 +60,22 @@ export async function startServer(opts = {}) {
   const browser = new BrowserManager();
   await browser.launch({ headless: opts.headless, cdp: opts.cdp, startUrl: opts.startUrl });
 
+  // A dialog, a download or a file picker is invisible unless it is announced, and a file picker
+  // otherwise leaves the tab frozen waiting for a mouse.
+  browser.onDialog = (d) => {
+    const q = d.type === "confirm" ? "Say yes or no." : d.type === "prompt" ? "Say cancel to dismiss it." : "Say yes to accept.";
+    broadcast("say", { text: `Dialog. ${d.message} ${q}`, priority: "high" });
+    broadcast("log", { t: Date.now(), level: "info", msg: `dialog: ${d.message}` });
+  };
+  browser.onDownload = (name) => {
+    broadcast("say", { text: `Downloading ${name}.` });
+    broadcast("log", { t: Date.now(), level: "info", msg: `download: ${name}` });
+  };
+  browser.onFileChooser = () => {
+    broadcast("say", { text: "This page wants a file. Choosing files by voice is not supported yet, so it was cancelled." });
+    broadcast("log", { t: Date.now(), level: "warn", msg: "file picker cancelled - not supported by voice yet" });
+  };
+
   if (BACKEND === "local") {
     const { getRuntime } = await import("./runtime.js");
     console.log("loading decision model (embedded, no API key)...");

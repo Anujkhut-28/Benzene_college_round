@@ -376,15 +376,68 @@ export async function execute(action, browser) {
 
     case "switch_tab": {
       const pages = browser.pages;
+      if (Number.isInteger(action.index)) {
+        // "go to tab 3" - tabs are spoken 1-based, stored 0-based.
+        const target = pages[action.index];
+        if (!target || target.isClosed()) return { ok: false, detail: `there is no tab ${action.index + 1}` };
+        await browser.setActive(target);
+        await browser.overlay("toast", `tab ${action.index + 1}`);
+        return { ok: true, detail: target.url() };
+      }
       if (pages.length < 2) return { ok: false, detail: "only one tab" };
       const i = pages.indexOf(browser.page);
       let next;
       if (action.direction === "previous") next = pages[(i - 1 + pages.length) % pages.length];
       else if (action.direction === "first") next = pages[0];
+      else if (action.direction === "last") next = pages[pages.length - 1];
       else next = pages[(i + 1) % pages.length];
       await browser.setActive(next);
       await browser.overlay("toast", "switched tab");
       return { ok: true, detail: next.url() };
+    }
+
+    case "reopen_tab": {
+      // Browsers keep recently closed tabs; Ctrl+Shift+T is the way back to them and needs no
+      // session history of our own.
+      const before = browser.pages.length;
+      await page.keyboard.press("Control+Shift+T");
+      await new Promise((r) => setTimeout(r, 700));
+      await browser.overlay("toast", "reopened tab");
+      return { ok: true, detail: browser.pages.length > before ? browser.page.url() : "no tab to reopen" };
+    }
+
+    case "close_other_tabs": {
+      const keep = browser.page;
+      const others = browser.pages.filter((p) => p !== keep && !p.isClosed());
+      for (const p of others) await p.close().catch(() => {});
+      await new Promise((r) => setTimeout(r, 200));
+      await browser.setActive(browser.page || keep);
+      await browser.overlay("toast", `closed ${others.length} tab${others.length === 1 ? "" : "s"}`);
+      return { ok: true, detail: `tabs=${browser.pages.length}` };
+    }
+
+    case "read_page": {
+      // Read what a sighted user would read: the main content, with menus and boilerplate out.
+      const text = await page.evaluate(() => {
+        const pick =
+          document.querySelector("article, main, [role=main]") ||
+          document.body;
+        if (!pick) return "";
+        const clone = pick.cloneNode(true);
+        clone.querySelectorAll("script,style,nav,header,footer,aside,noscript,svg").forEach((n) => n.remove());
+        return (clone.innerText || "").replace(/\s+/g, " ").trim();
+      }).catch(() => "");
+      if (!text) return { ok: false, detail: "nothing readable on this page" };
+      return { ok: true, detail: `${text.length} chars`, speak: text.slice(0, 900) };
+    }
+
+    case "answer_prompt": {
+      const dlg = browser.pendingDialog;
+      if (!dlg) return { ok: false, detail: "nothing is asking" };
+      if (action.accept) await dlg.accept().catch(() => {});
+      else await dlg.dismiss().catch(() => {});
+      browser.pendingDialog = null;
+      return { ok: true, detail: action.accept ? "accepted" : "dismissed" };
     }
 
     default:

@@ -81,6 +81,16 @@ const RULES = [
   // Continuous scrolling: keep going until "stop". Separate from the one-shot "scroll down"
   // so that saying "more" does not suddenly start moving on its own.
   { intent: "scroll_start", re: /^keep scrolling( down)?$|^keep scrolling (down|up|left|right)$|^start scrolling( down| up)?$|^scroll (away|on) (down|up)$|^keep going( down| up)?$/ },
+  // Everyday commands that were missing entirely.
+  { intent: "switch_tab", re: /^(go|switch|jump) to tab (\d+|one|two|three|four|five|six|seven|eight|nine|ten)$|^tab (\d+|one|two|three|four|five|six|seven|eight|nine|ten)$/ },
+  { intent: "reopen_tab", re: /^(reopen|restore|undo close|bring back)( (the|that|this|last))?( closed| last)? tab$|^reopen closed tab$|^bring back that tab$|^open the last closed tab$/ },
+  { intent: "close_other_tabs", re: /^close (the )?other tabs$|^close (all )?(the )?others$|^close everything else$|^only (keep|leave) this tab$/ },
+  { intent: "find_on_page", re: /^(find|search) (on |in )?(this |the )?page$|^find on page$|^search this page$|^look (for|up) on (this|the) page$/ },
+  { intent: "zoom_in", re: /^(zoom|magnify) in$|^make (it|text|bigger|larger)$|^bigger$|^larger text$/ },
+  { intent: "zoom_out", re: /^(zoom|shrink) out$|^make (it|text|smaller)$|^smaller$|^smaller text$/ },
+  { intent: "zoom_reset", re: /^(reset|normal) zoom$|^zoom (reset|normal|100)$|^actual size$/ },
+  { intent: "read_page", re: /^read (this|the|it all|this whole) page( (aloud|out loud|to me))?$|^read (it )?(aloud|out loud)$|^what does (this|the) page say$/ },
+  { intent: "repeat_last", re: /^(repeat|again|do that again|one more time|once more|do it again|same again)$|^repeat (that|it)( again)?$/ },
 ];
 
 const SITE_WORDS = {
@@ -198,6 +208,16 @@ function noul(v) {
   return { type: "noul", noul: v, probability_true: v, probability_false: 1 - v };
 }
 
+const TABS_ONE_TO_TEN = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+
+/** "tab 3" / "go to the third tab" -> 3. Returns null when no tab was named. */
+function parseTabNumber(t) {
+  const m = t.match(/\btab (\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/);
+  if (!m) return null;
+  const v = m[1];
+  return /^\d+$/.test(v) ? Number(v) : TABS_ONE_TO_TEN[v] ?? null;
+}
+
 export function recognize(transcript, { site: snapshotSite = "generic" } = {}) {
   const t = normalizeCommand(transcript);
   if (!t || t.split(" ").length > 12) return null;
@@ -221,6 +241,14 @@ export function recognize(transcript, { site: snapshotSite = "generic" } = {}) {
     if (!rule.re.test(t)) continue;
     if (rule.intent === "switch_tab") {
       out.tab_direction = /^(previous|prev|last|back)/.test(t) ? high("previous") : high("next");
+    }
+    // "go to tab 3" needs an ordinal, not a direction.
+    if (rule.intent === "switch_tab") {
+      const n = parseTabNumber(t);
+      if (n != null) {
+        out.tab_index = n;
+        out.tab_direction = high("none");
+      }
     }
     if (rule.url) {
       out.intent = high(rule.intent);

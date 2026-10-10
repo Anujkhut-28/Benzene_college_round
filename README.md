@@ -139,8 +139,13 @@ Numbers work to 60, as digits or words ("fourteen", "twenty three").
 | "search for alan turing" | uses the page's search box, else DuckDuckGo |
 | "search youtube for lofi beats" | site-specific search |
 | "go back" / "go forward" / "reload" | history |
-| "open a new tab" / "close this tab" / "next tab" | tabs |
-| "find on page" is not supported — use the browser's own Ctrl+F | — |
+| "open a new tab" / "close this tab" / "next tab" / "previous tab" | tabs |
+| "go to tab 3" / "tab two" | jumps straight to that tab |
+| "reopen closed tab" | brings back the last closed tab |
+| "close the other tabs" | closes everything except this one |
+| "find on page" | opens the browser's find bar |
+| "zoom in" / "zoom out" / "reset zoom" | page zoom |
+| "read this page" | reads the main content aloud |
 
 Scrolling is aimed by **where the cursor is**, so look at what you want to move. A chat pane, modal
 or feed scrolls instead of the page whenever it is under the cursor.
@@ -209,11 +214,42 @@ use to someone who cannot see the screen. Turn that off with the *Speak replies*
 | --- | --- |
 | "click place order" | refused — waits for **"confirm"** |
 | "confirm" / "cancel" | resolves or drops the pending action |
+| "again" / "repeat that" | repeats the last action |
 | "so anyway I think we should get lunch" | ignored |
 
 A spoken click on anything whose label reads like a risk (place order, checkout, buy now, delete,
 send message, subscribe, sign in) requires a confirmation, whichever way it was aimed — by name, by
 number, or by cursor. Pinch clicks are guarded the same way.
+
+"Again" replays only the single previous action, and never a destructive one.
+
+### Dialogs, downloads and file pickers
+
+A JavaScript `alert`, `confirm` or `prompt` is held rather than dismissed behind your back, read
+out to you, and answered with **"yes"** or **"no"** — the same words you already use to confirm and
+cancel. Downloads are announced by filename.
+
+Choosing a file is **not** supported: a file picker is cancelled and you are told why, rather than
+being left with a frozen tab. Opening a file by voice needs a real file picker and is the obvious
+next piece of work.
+
+### Macros
+
+Some journeys are the same every day. Put them in `macros.json` next to `package.json` and trigger
+the whole thing with one phrase:
+
+```json
+{
+  "timesheet": ["go to example dot com", "show numbers", "click 3", "search for this month", "press enter"]
+}
+```
+
+Then say **"do my timesheet"** (or "run the timesheet", "start timesheet macro").
+
+Each step is an ordinary command, run through the same rules, model and confirmation gate as
+anything you say by hand — a macro cannot do anything you could not already do. It stops at the
+first step that needs a confirmation or could not resolve its target, rather than ploughing on. A
+missing or malformed `macros.json` is ignored with a message in the log, never fatal.
 
 Common commands are recognised by a rule-based fast path in microseconds. Anything the rules do not
 recognise goes to the decision model, which reads intent, target, site and completeness in a single

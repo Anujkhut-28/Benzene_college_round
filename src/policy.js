@@ -276,6 +276,33 @@ function buildAction({ intentName, answers, candidates, snapshot, reasons, exclu
     case "scroll_stop":
       return { decision: "act", action: { type: "stop_scrolling", label: "stopped scrolling" } };
 
+    case "reopen_tab":
+      return { decision: "act", action: { type: "reopen_tab", label: "reopened the closed tab" } };
+
+    case "close_other_tabs":
+      return { decision: "act", action: { type: "close_other_tabs", label: "closed the other tabs" } };
+
+    case "find_on_page":
+      return { decision: "act", action: { type: "press_key", key: "Control+f", label: "find on page" } };
+
+    case "zoom_in":
+      return { decision: "act", action: { type: "press_key", key: "Control+=", label: "zoom in" } };
+
+    case "zoom_out":
+      return { decision: "act", action: { type: "press_key", key: "Control+-", label: "zoom out" } };
+
+    case "zoom_reset":
+      return { decision: "act", action: { type: "press_key", key: "Control+0", label: "reset zoom" } };
+
+    case "read_page":
+      return { decision: "act", action: { type: "read_page", label: "reading this page" } };
+
+    case "repeat_last":
+      return { decision: "act", action: { type: "repeat_last", label: "again" } };
+
+    case "answer_prompt":
+      return { decision: "act", action: { type: "answer_prompt", accept: answers.accept !== false, label: answers.accept !== false ? "accepted" : "dismissed" } };
+
     case "scroll_start": {
       const dir = answers.scroll_direction ?? "down";
       return { decision: "act", action: { type: "start_scrolling", direction: dir, label: `scrolling ${dir}` } };
@@ -371,6 +398,11 @@ function buildAction({ intentName, answers, candidates, snapshot, reasons, exclu
     }
 
     case "switch_tab": {
+      // "go to tab 3" names an exact tab; "next tab" stays directional.
+      const idx = answers.tab_index;
+      if (Number.isInteger(idx) && idx >= 1) {
+        return { decision: "act", action: { type: "switch_tab", index: idx - 1, label: `tab ${idx}` } };
+      }
       const dir = answers.tab_direction?.choice && answers.tab_direction.choice !== "none" ? answers.tab_direction.choice : "next";
       return { decision: "act", action: { type: "switch_tab", direction: dir, label: `switch tab (${dir})` } };
     }

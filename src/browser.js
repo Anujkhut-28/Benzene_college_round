@@ -45,6 +45,32 @@ export class BrowserManager {
     await this.context.addInitScript(installOverlay);
 
     this.context.on("page", (page) => this._track(page));
+
+    // Dialogs are the classic way hands-free browsing dies: Playwright dismisses them by
+    // default, silently, so a confirm() vanishes before the user knows it was asked. Hold the
+    // dialog instead and let "yes"/"no" answer it.
+    this.context.on("dialog", (dialog) => {
+      this.pendingDialog = dialog;
+      this.lastDownload = null;
+      this.onDialog?.({ type: dialog.type(), message: dialog.message(), default: dialog.defaultValue() });
+    });
+
+    // Downloads have no page to look at, so report what landed rather than dropping it.
+    this.context.on("page", (page) => {
+      page.on("download", (download) => {
+        this.lastDownload = download.suggestedFilename();
+        this.onDownload?.(download.suggestedFilename());
+      });
+    });
+
+    // A file picker blocks the page until answered. There is no way to pick a file by voice
+    // yet, so cancel it and say so rather than leaving the tab frozen.
+    this.context.on("page", (page) => {
+      page.on("filechooser", async (chooser) => {
+        this.onFileChooser?.(chooser);
+        await chooser.setFiles([]).catch(() => {});
+      });
+    });
     this.context.on("close", () => {
       this.pages = [];
       this.active = null;

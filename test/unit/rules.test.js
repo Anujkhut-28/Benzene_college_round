@@ -188,6 +188,43 @@ test("'show numbers' numbers the page however it is phrased", () => {
   }
 });
 
+test("everyday tab, page and repeat commands are recognised", () => {
+  assert.equal(intentOf("go to tab 3"), "switch_tab");
+  assert.equal(intentOf("tab two"), "switch_tab");
+  assert.equal(intentOf("reopen closed tab"), "reopen_tab");
+  assert.equal(intentOf("restore that tab"), "reopen_tab");
+  assert.equal(intentOf("close the other tabs"), "close_other_tabs");
+  assert.equal(intentOf("close everything else"), "close_other_tabs");
+  assert.equal(intentOf("find on page"), "find_on_page");
+  assert.equal(intentOf("zoom in"), "zoom_in");
+  assert.equal(intentOf("zoom out"), "zoom_out");
+  assert.equal(intentOf("reset zoom"), "zoom_reset");
+  assert.equal(intentOf("read this page"), "read_page");
+  assert.equal(intentOf("repeat that"), "repeat_last");
+  assert.equal(intentOf("again"), "repeat_last");
+});
+
+test("'go to tab N' resolves a tab number, 1-based as spoken", () => {
+  assert.equal(recognize("go to tab 3").tab_index, 3);
+  assert.equal(recognize("tab one").tab_index, 1);
+  assert.equal(recognize("switch to tab seven").tab_index, 7);
+  // A directional tab command carries no number.
+  assert.equal(recognize("next tab").tab_index, undefined);
+  assert.equal(recognize("next tab").tab_direction.choice, "next");
+  assert.equal(recognize("previous tab").tab_direction.choice, "previous");
+});
+
+test("'yes', 'no' and 'confirm' are not hijacked by dialog answering", () => {
+  // These already mean confirm/cancel. Answering a dialog must not steal them, because the rule
+  // table cannot know whether a dialog is open.
+  assert.equal(intentOf("confirm"), "confirm");
+  assert.equal(intentOf("yes"), "confirm");
+  assert.equal(intentOf("yep"), "confirm");
+  assert.equal(intentOf("cancel"), "cancel");
+  assert.equal(intentOf("no"), "cancel");
+  assert.equal(intentOf("nope"), "cancel");
+});
+
 test("click flavours keep click_element so the model still resolves a target", () => {
   const howOf = (p) => {
     const r = recognize(p);

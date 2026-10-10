@@ -21,6 +21,10 @@ import { evaluatePolicy, describe } from "./policy.js";
 import { execute } from "./executor.js";
 import { parseCandidatePick, cleanTranscript } from "./spans.js";
 import { recognize } from "./rules.js";
+import { matchMacro, loadMacros } from "./macros.js";
+
+// Actions that make no sense to replay on "again".
+const SKIP_REPEAT = new Set(["repeat_last", "stop_scrolling", "start_scrolling", "set_mic", "read_page", "show_numbers", "hide_numbers"]);
 import { approxTokens } from "./snapshot.js";
 
 const avg = (xs) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
@@ -42,6 +46,8 @@ export class Controller extends EventEmitter {
     this.pending = null; // destructive action awaiting "confirm"
     // Dictation: once the user is in a field, unrecognised words are typed rather than ignored.
     this.dictation = false;
+    // The single previous action, for "again". Never a queue.
+    this.lastAction = null;
     this.candidates = null; // { list: [{n,id,label}], intent: {type,text}, at }
     this.lastDecision = null;
     this.debounceTimer = null;
@@ -177,6 +183,29 @@ export class Controller extends EventEmitter {
       this.silenceTimer = setTimeout(() => this.decideNow("after-action"), 150);
       return;
     }
+    // A dialog is blocking the page. "yes"/"no"/"ok"/"cancel" answer it directly, but only while
+    // one is actually open - these words already mean confirm and cancel everywhere else, so
+    // they must not be hijacked globally.
+    if (this.browser.pendingDialog) {
+      const answer = /^(yes|ok|okay|accept|allow|confirm|do it|go ahead)\b/.test(utt.text.toLowerCase().trim());
+      const refuse = /^(no|nope|deny|cancel|dismiss|don't|do not|stop)\b/.test(utt.text.toLowerCase().trim());
+      if (answer || refuse) {
+        this._consume(utt, utt.text);
+        await this._runAction({ type: "answer_prompt", accept: answer, label: answer ? "accepted" : "dismissed" }, { via: "dialog" });
+        return;
+      }
+    }
+
+    // A user-defined macro, before anything else: "do my timesheet" is a sequence, not a command.
+    const macro = matchMacro(utt.text);
+    if (macro) {
+      this._consume(utt, utt.text);
+      this._log("info", `running macro "${macro.name}" (${macro.steps.length} steps)`);
+      this.emit("say", { text: `Running ${macro.name}.` });
+      await this._runMacro(macro);
+      return;
+    }
+
     // Dictation. With a field focused, words that are not a command are simply text to type.
     // Checked before the model so it costs nothing, and only for words the rule table does not
     // recognise — a real command always wins over being typed into a box.
@@ -318,6 +347,21 @@ export class Controller extends EventEmitter {
           this.emit("say", { text: was ? "Stopped scrolling." : "" });
           break;
         }
+        // "again" re-runs whatever was last done. Kept out of the policy's reach on purpose:
+        // repeating a navigation is harmless, repeating a click is not, so this only ever
+        // replays the single previous action and never a queued list.
+        if (policy.action.type === "repeat_last") {
+          this._consume(utt, textAtRequest);
+          const prev = this.lastAction;
+          if (!prev) {
+            this._log("info", "nothing to repeat");
+            this.emit("say", { text: "There is nothing to repeat." });
+            break;
+          }
+          this._log("info", `repeating: ${prev.type}`);
+          await this._runAction(prev, { via: "repeat" });
+          break;
+        }
         actionResult = await this._runAction(policy.action, { decision, utterance: utt });
         break;
       case "confirm":
@@ -375,6 +419,76 @@ export class Controller extends EventEmitter {
     this.silenceTimer = setTimeout(() => {
       if (this.utterance === utt && !utt.actedOn) this.decideNow("silence");
     }, waitFor);
+  }
+
+  /**
+   * Run a macro's steps in order, each through the same recognise -> policy -> execute path as
+   * anything spoken by hand. Stops at the first step that does not act, so a macro never barrels
+   * on past a confirmation prompt the user has not answered yet.
+   */
+  async _runMacro(macro) {
+    for (let i = 0; i < macro.steps.length; i++) {
+      const step = macro.steps[i];
+      const answered = await this._runOneStep(step);
+      if (answered === "stop") {
+        this._log("info", `macro "${macro.name}" stopped at step ${i + 1}: "${step}"`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    this._log("act", `macro "${macro.name}" finished`);
+    this.emit("say", { text: `${macro.name} done.` });
+  }
+
+  /** One macro step. Returns "stop" when the step left something pending for the user. */
+  async _runOneStep(text) {
+    const utt = {
+      id: `macro-${Date.now()}`,
+      physicalId: "",
+      prefix: "",
+      gen: 0,
+      text,
+      final: true,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+      actedOn: false,
+      actedText: null,
+    };
+    const prevUtterance = this.utterance;
+    this.utterance = utt;
+    try {
+      const result = await this._decide(
+        {
+          transcript: text,
+          snapshot: this.snapshot,
+          pendingConfirmation: this.pending ? describe(this.pending) : null,
+          tabs: this.browser.tabInfo(),
+          context: this.context,
+        },
+        {},
+      );
+      const policy = evaluatePolicy({
+        answers: result.answers,
+        candidates: result.candidates,
+        snapshot: this.snapshot,
+        isFinal: true,
+        silentMs: SILENCE_COMPLETE_MS,
+        pending: this.pending,
+        context: this.context,
+      });
+      // Anything that is not a clean "do it" stops the macro, so it never barrels past a
+      // confirmation the user has not answered or a target it could not resolve.
+      if (policy.decision !== "act") return "stop";
+      utt.actedOn = true;
+      if (policy.action.confirmed) this.pending = null;
+      await this._runAction(policy.action, { via: "macro" });
+      return "ok";
+    } catch (err) {
+      this._log("error", `macro step "${text}" failed: ${err?.message || err}`);
+      return "stop";
+    } finally {
+      this.utterance = prevUtterance;
+    }
   }
 
   /**
@@ -448,6 +562,12 @@ export class Controller extends EventEmitter {
       if (sinceLastWord != null) this.stats.commandToActionMs.push(sinceLastWord);
       if (meta.decision?.decisionLagMs != null) this.stats.decisionMs.push(meta.decision.decisionLagMs);
       this.history.push({ action, at: Date.now(), url: res.detail });
+      // Remembered for "again". Destructive and repeating actions are excluded: replaying
+      // "place order" because the user said "again" is not what anyone wants.
+      if (action?.type && !SKIP_REPEAT.has(action.type) && !(action.confirmed === false && isDestructiveElement((this.snapshot?.elements ?? []).find((e) => e.id === action.targetId)))) {
+        this.lastAction = action;
+      }
+      if (res.speak) this.emit("say", { text: res.speak });
       this._recordContext({ action, ok: res.ok, detail: res.detail, said: meta.decision?.transcript || utt?.actedText || "", pageBefore });
       const decisionMs = meta.decision?.decisionLagMs ?? null;
       const entry = {
