@@ -182,14 +182,22 @@ export class BrowserManager {
     return { width: 1280, height: 900 };
   }
 
-  async pointer(opts = {}) {
-    this._nextPointer = opts;
+ async pointer(opts = {}) {
+    // Clicks get their own slot so a following move message can never overwrite one.
+    if (opts.click) this._clickNext = opts;
+    else this._nextPointer = opts;
     if (this._pointerBusy) return { ok: true };
     this._pointerBusy = true;
     try {
-      while (this._nextPointer) {
-        const next = this._nextPointer;
-        this._nextPointer = null;
+      while (this._clickNext || this._nextPointer) {
+        let next;
+        if (this._clickNext) {
+          next = this._clickNext;
+          this._clickNext = null;
+        } else {
+          next = this._nextPointer;
+          this._nextPointer = null;
+        }
         await this._execPointer(next);
       }
     } finally {
@@ -198,22 +206,40 @@ export class BrowserManager {
     return { ok: true };
   }
 
-  async _execPointer({ x, y, click = false } = {}) {
+  async _execPointer({ x, y, click = false, snap = true } = {}) {
     const page = this.page;
     if (!page || page.isClosed()) return { ok: false };
     const vp = await this.getViewport();
     const px = Math.round(Math.max(0, Math.min(1, Number(x) || 0)) * (vp.width - 1));
     const py = Math.round(Math.max(0, Math.min(1, Number(y) || 0)) * (vp.height - 1));
-    this.lastPointer = { x, y, px, py };
+
+    let ex = px;
+    let ey = py;
+    let target = null;
+    if (snap) {
+      target = await page
+        .evaluate(([a, b]) => (window.__vb && window.__vb.snap ? window.__vb.snap(a, b) : null), [px, py])
+        .catch(() => null);
+      if (target) {
+        ex = target.x;
+        ey = target.y;
+      }
+    } else if (this.snapId) {
+      await page.evaluate(() => window.__vb && window.__vb.unsnap && window.__vb.unsnap()).catch(() => {});
+    }
+    this.snapId = target ? target.id : null;
+    this.lastPointer = { x, y, px: ex, py: ey };
 
     if (click) {
-      await this.overlay("cursor", { x: px, y: py, visible: true, down: true }).catch(() => {});
-      await page.mouse.click(px, py).catch(() => {});
+      await this.overlay("cursor", { x: ex, y: ey, visible: true, down: true }).catch(() => {});
+      // A snapped click goes through clickElement so the destructive-button guard applies.
+      if (target) return this.clickElement(target.id, { source: "pointer" });
+      await page.mouse.click(ex, ey).catch(() => {});
     } else {
-      await page.mouse.move(px, py).catch(() => {});
-      await this.overlay("cursor", { x: px, y: py, visible: true, down: false }).catch(() => {});
+      await page.mouse.move(ex, ey).catch(() => {});
+      if (!target) await this.overlay("cursor", { x: ex, y: ey, visible: true, down: false }).catch(() => {});
     }
-    return { ok: true, detail: `${px},${py}` };
+    return { ok: true, detail: `${ex},${ey}` };
   }
 
   async repaintCursor() {

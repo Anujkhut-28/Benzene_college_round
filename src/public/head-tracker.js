@@ -1,22 +1,25 @@
 /**
- * Hands-free pointer: webcam EYE tracking drives the cursor, pinch-to-click activates.
- * Runs entirely in the browser on the control page and forwards synthetic pointer events
- * into the controlled page over the existing WebSocket.
+ * Hands-free pointer driven by webcam head pose (default) or eye gaze (experimental).
+ * Runs in the control page and forwards pointer events to the controlled page over the WebSocket.
+ * The controlled page snaps the pointer to the nearest clickable element (see overlay.js).
  *
- * Smoothing pipeline (each layer removes a different kind of noise):
- *   1. median filter on the raw iris position  -> kills single-frame landmark spikes
- *   2. One Euro filter on the cursor position  -> steady at rest, responsive on big moves
- *   3. "leash" (holdRadius)                    -> ignores wobble smaller than a small radius
+ * Smoothing: One Euro filter on the cursor + a small leash. Eye modes add a median filter on the
+ * raw iris and a much stiffer filter, because iris landmarks are far noisier than head pose.
  */
 
 const DEFAULTS = {
   enabled: false,
-  mode: "eye",
+  mode: "head", // "head" (recommended) | "blend" (experimental) | "eye" (experimental)
   sensitivity: 1.0,
-  minCutoff: 0.25, // One Euro: lower = steadier when still
-  beta: 0.7, // One Euro: higher = snappier when moving
-  eyeMedian: 1, // median window on the raw iris; start() raises this to 5
-  holdRadius: 0.008, // leash: ignore gaze wobble smaller than ~0.8% of the screen
+  // head mode
+  headMinCutoff: 1.0,
+  headBeta: 4,
+  headHold: 0.004,
+  // eye / blend modes
+  minCutoff: 0.25,
+  beta: 0.7,
+  holdRadius: 0.008,
+  eyeMedian: 1, // start() raises this to 5
   margin: 0.05,
   deadzone: 0.003,
   mirror: true,
@@ -39,7 +42,7 @@ const EYE_GAIN_Y = 8.5;
 const HEAD_GAIN_X = 5.0;
 const HEAD_GAIN_Y = 6.0;
 
-/** One Euro filter: adaptive low-pass that kills jitter at rest but keeps up with fast moves. */
+/** One Euro filter: adaptive low-pass, steady at rest, responsive on fast moves. */
 class OneEuro {
   constructor() {
     this.reset();
@@ -192,10 +195,7 @@ export class HeadTracker {
     }
   }
 
-  /**
-   * True while thumb and index are pinched. Normalised by hand size so the threshold holds at
-   * any distance from the camera, with hysteresis so a trembling hand cannot chatter clicks.
-   */
+  /** True while thumb and index are pinched (normalised by hand size, with hysteresis). */
   pinching(hand) {
     if (!hand || hand.length < 21) {
       this.pinched = false;
@@ -255,8 +255,7 @@ export class HeadTracker {
     const v = this.video;
     if (!v || v.readyState < 2 || !this.landmarker) return;
 
-    // The camera delivers ~30 fps but rAF fires at the display rate. Re-detecting the same
-    // frame wastes time and feeds zero-delta samples to the filter.
+    // Camera ~30 fps, rAF at display rate: skip duplicate frames.
     if (v.currentTime === this._lastVideoTime) return;
     this._lastVideoTime = v.currentTime;
 
@@ -272,7 +271,6 @@ export class HeadTracker {
     }
     const marks = res?.faceLandmarks?.[0];
     if (!marks) {
-      // Re-seed the filters when the face comes back so the cursor does not glide in from stale state.
       this.fx.reset();
       this.fy.reset();
       this._eyeBuf = [];
@@ -284,19 +282,22 @@ export class HeadTracker {
     const p = this.compute(marks);
     if (!p) return;
 
+    const headOnly = this.cfg.mode === "head";
+    const minCutoff = headOnly ? this.cfg.headMinCutoff : this.cfg.minCutoff;
+    const beta = headOnly ? this.cfg.headBeta : this.cfg.beta;
+    const hold = headOnly ? this.cfg.headHold : this.cfg.holdRadius;
+
     this.smooth = {
-      x: this.fx.filter(p.x, ts, this.cfg.minCutoff, this.cfg.beta),
-      y: this.fy.filter(p.y, ts, this.cfg.minCutoff, this.cfg.beta),
+      x: this.fx.filter(p.x, ts, minCutoff, beta),
+      y: this.fy.filter(p.y, ts, minCutoff, beta),
     };
 
-    // Leash: the cursor only moves once the filtered gaze is further than holdRadius away,
-    // and then it trails the gaze by that radius. Wobble inside the radius is ignored.
+    // Leash: ignore wobble smaller than `hold`, then trail the target by that radius.
     const dx = this.smooth.x - this.point.x;
     const dy = this.smooth.y - this.point.y;
     const dist = Math.hypot(dx, dy);
-    const r = this.cfg.holdRadius;
-    if (dist > r) {
-      const k = (dist - r) / dist;
+    if (dist > hold) {
+      const k = (dist - hold) / dist;
       this.point = { x: this.point.x + dx * k, y: this.point.y + dy * k };
     }
 
@@ -406,9 +407,8 @@ export class HeadTracker {
   }
 
   /**
-   * Raw iris position for this frame (average of the open eyes, median-filtered over the last
-   * few frames), or { blinking: true } while the lids are closed and for blinkHoldMs afterwards,
-   * or null if unavailable.
+   * Raw iris position (average of open eyes, median-filtered over the last few frames), or
+   * { blinking: true } while lids are closed and for blinkHoldMs afterwards, or null.
    */
   eyeSample(marks) {
     if (!marks || marks.length < 478) return null;
@@ -423,7 +423,6 @@ export class HeadTracker {
       this._isBlinking = true;
       return { blinking: true };
     }
-    // Lids reopening still drag the iris landmarks; wait for them to settle.
     if (now < this._blinkUntil) {
       this._isBlinking = true;
       return { blinking: true };
@@ -439,10 +438,9 @@ export class HeadTracker {
     return { x: median(this._eyeBuf.map((e) => e.x)), y: median(this._eyeBuf.map((e) => e.y)) };
   }
 
-  /** Gaze position (0..1) relative to the calibrated neutral, or null when unavailable. */
   eyeGaze(eye) {
     if (!eye) return null;
-    if (eye.blinking) return this._lastGaze || null; // hold during blinks
+    if (eye.blinking) return this._lastGaze || null;
     if (!this.eyeBase) this.eyeBase = { x: eye.x, y: eye.y };
     const gaze = {
       x: 0.5 + (eye.x - this.eyeBase.x) * EYE_GAIN_X,
@@ -461,7 +459,7 @@ export class HeadTracker {
     ctx.clearRect(0, 0, w, h);
     if (marks && this.cfg.showVideo) {
       const pts = [marks[NOSE], marks[L_CHEEK], marks[R_CHEEK]];
-      if (marks.length >= 478) {
+      if (this.cfg.mode !== "head" && marks.length >= 478) {
         for (const i of [468, 473]) {
           if (marks[i]) pts.push(marks[i]);
         }
@@ -492,10 +490,7 @@ function median(a) {
   return s[Math.floor(s.length / 2)];
 }
 
-/**
- * Iris centre relative to eye corners, normalized by eye width so the result is
- * independent of face size, distance, and head roll. Includes eyelid-closure detection.
- */
+/** Iris centre relative to eye corners, normalized by eye width, with eyelid-closure detection. */
 function irisOffset(marks, irisIdx, cornerA, cornerB, lidTop, lidBottom) {
   const a = marks[cornerA];
   const b = marks[cornerB];

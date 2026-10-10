@@ -181,10 +181,10 @@
         </div>
         <div class="settings">
           <label for="headmode">Tracking</label>
-          <select id="headmode">
-            <option value="eye">Eyes (precise)</option>
-            <option value="blend">Eyes and head (steadier)</option>
-            <option value="head">Head only (coarse)</option>
+         <select id="headmode">
+            <option value="head">Head pointing (recommended)</option>
+            <option value="blend">Eyes + head (experimental)</option>
+            <option value="eye">Eyes only (experimental)</option>
           </select>
           <label for="headclick">Click</label>
           <select id="headclick">
@@ -196,9 +196,10 @@
           <div class="full row">
             <label><input type="checkbox" id="headmirror" checked /> Mirror</label>
             <label><input type="checkbox" id="showvideo" checked /> Show video</label>
+            <label><input type="checkbox" id="headsnap" checked /> Snap to elements</label>
           </div>
         </div>
-        <p class="small" style="margin:12px 0 0">Move your eyes to steer the cursor, pinch thumb and index finger to click. Risky buttons still need a spoken “confirm”.</p>
+               <p class="small" style="margin:12px 0 0">Turn your head to steer the pointer. It snaps to the nearest link or button, so rough aim is enough. Pinch thumb and index finger to click. Risky buttons still need a spoken “confirm”. Eye modes are experimental.</p>
       </details>
     </section>
 
@@ -436,19 +437,19 @@ import { HeadTracker } from "/head-tracker.js";
   const tracker = new HeadTracker({
     video: $("headvideo"),
     canvas: $("headcanvas"),
-    onStatus: (s) => {
+        onStatus: (s) => {
       const el = $("headstate");
-      const base = s.state === "running" ? (s.face === false ? "no face" : "tracking") : s.state;
+      const base = s.state === "running" ? (s.face === false ? "no face" : s.calibrating ? "calibrating, look straight ahead" : "tracking") : s.state;
       el.textContent = s.pinching ? "pinch — click!" : base;
       el.style.color = s.state === "error" ? "var(--red)" : s.pinching ? "var(--accent)" : s.state === "running" ? "var(--green)" : "var(--muted)";
       if (s.message) $("headstate").title = s.message;
       $("headtoggle").textContent = tracker.running ? "Disable eye control" : "Enable eye control";
     },
     onPoint: (p) => {
-      send({ type: "pointer", x: p.x, y: p.y });
+      send({ type: "pointer", x: p.x, y: p.y, snap: $("headsnap").checked });
     },
     onActivate: (a) => {
-      if (a.click) send({ type: "pointer", x: a.click.x, y: a.click.y, click: true });
+      if (a.click) send({ type: "pointer", x: a.click.x, y: a.click.y, click: true, snap: $("headsnap").checked });
     },
   });
 

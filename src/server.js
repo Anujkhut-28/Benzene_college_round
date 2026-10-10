@@ -147,6 +147,8 @@ export async function startServer(opts = {}) {
           break;
         case "pointer":
           await browser.pointer(msg).catch(() => {});
+          // A pinch click can navigate; refresh so voice commands see the new page.
+          if (msg.click) setTimeout(() => controller.refreshSnapshot().catch(() => {}), 700);
           break;
         case "click":
           await browser.clickElement(msg.elementId, { source: "pointer" }).catch(() => {});

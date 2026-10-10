@@ -27,6 +27,10 @@ export function installOverlay() {
     .__vb-cursor.__vb-cursor-down::before{background:rgba(239,68,68,.55);border-color:#ef4444;
       box-shadow:0 0 0 2px rgba(239,68,68,.3),0 0 14px rgba(239,68,68,1);transform:scale(1.3)}
     .__vb-cursor.__vb-cursor-hide{display:none}
+    .__vb-snap{position:fixed;z-index:${Z};pointer-events:none;border:2px solid #f59e0b;border-radius:6px;
+      background:rgba(245,158,11,.10);box-shadow:0 0 0 3px rgba(245,158,11,.25);
+      transition:left .08s,top .08s,width .08s,height .08s}
+    .__vb-snap.__vb-snap-hide{display:none}
   `;
   const ensureStyle = () => {
     if (document.getElementById("__vb-style")) return;
@@ -44,7 +48,44 @@ export function installOverlay() {
   let toastEl = null;
   let toastTimer = null;
   let cursorEl = null;
+    const SNAP_SEL =
+    "a[href],button,input:not([type=hidden]),textarea,select,summary,[role=button],[role=link],[role=tab]," +
+    "[role=menuitem],[role=checkbox],[role=radio],[role=switch],[role=searchbox],[role=combobox],[role=textbox],[onclick]";
+  const SNAP_RADIUS = 140; // px: farther than this from every element, the cursor stays free
+  const SNAP_STICKY = 24; // px: the current target is kept unless another is this much closer
+  let snapItems = [];
+  let snapAt = 0;
+  let snapId = null;
+  let snapRing = null;
 
+  const collectSnap = () => {
+    const now = performance.now();
+    if (snapItems.length && now - snapAt < 250) return snapItems;
+    snapAt = now;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const items = [];
+    for (const el of document.querySelectorAll(SNAP_SEL)) {
+      if (items.length >= 500) break;
+      const r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) continue;
+      if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) continue;
+      if (r.width > vw * 0.8 && r.height > vh * 0.5) continue; // page-sized wrappers
+      const st = getComputedStyle(el);
+      if (st.visibility === "hidden" || st.display === "none" || Number(st.opacity) === 0) continue;
+      let id = el.getAttribute("data-vb-id");
+      if (!id) {
+        window.__vbNextId = window.__vbNextId || 1;
+        id = "e" + String(window.__vbNextId++).padStart(2, "0");
+        el.setAttribute("data-vb-id", id);
+      }
+      items.push({ id, l: r.left, t: r.top, r: r.right, b: r.bottom });
+    }
+    snapItems = items;
+    return items;
+  };
+  window.addEventListener("scroll", () => { snapAt = 0; }, { passive: true, capture: true });
+  window.addEventListener("resize", () => { snapAt = 0; }, { passive: true });
   const api = {
     /**
      * Draw a visible cursor at a viewport point. Playwright moves a real mouse and fires real
@@ -82,7 +123,71 @@ export function installOverlay() {
       cursorEl.__vbLast = { x: Math.round(x), y: Math.round(y), visible: true, down: Boolean(down) };
       return true;
     },
+        /**
+     * Magnetic pointer: find the clickable element nearest (x, y), outline it, and put the cursor
+     * on it. Returns { id, x, y } for the snapped target or null when nothing is within range.
+     */
+    snap(x, y) {
+      ensureStyle();
+      const items = collectSnap();
+      let best = null;
+      let bestD = Infinity;
+      let bestArea = Infinity;
+      let cur = null;
+      let curD = Infinity;
+      for (const it of items) {
+        const dx = Math.max(it.l - x, 0, x - it.r);
+        const dy = Math.max(it.t - y, 0, y - it.b);
+        const d = Math.hypot(dx, dy);
+        const area = (it.r - it.l) * (it.b - it.t);
+        if (it.id === snapId) {
+          cur = it;
+          curD = d;
+        }
+        // Closest wins; among overlapping elements prefer the smaller (the link inside the card).
+        if (d < bestD - 0.5 || (Math.abs(d - bestD) <= 0.5 && area < bestArea)) {
+          best = it;
+          bestD = d;
+          bestArea = area;
+        }
+      }
+      let pick = best;
+      let pickD = bestD;
+      if (cur && curD <= SNAP_RADIUS && curD <= bestD + SNAP_STICKY) {
+        pick = cur;
+        pickD = curD;
+      }
+      if (!pick || pickD > SNAP_RADIUS) {
+        api.unsnap();
+        api.cursor({ x, y });
+        return null;
+      }
+      snapId = pick.id;
+      if (!snapRing || !snapRing.isConnected) {
+        snapRing = document.createElement("div");
+        snapRing.className = "__vb-snap";
+        document.documentElement.appendChild(snapRing);
+      }
+      snapRing.classList.remove("__vb-snap-hide");
+      Object.assign(snapRing.style, {
+        left: pick.l - 3 + "px",
+        top: pick.t - 3 + "px",
+        width: pick.r - pick.l + 6 + "px",
+        height: pick.b - pick.t + 6 + "px",
+      });
+      // Small elements: aim at the centre. Wide ones: stay under the pointer but inside the element.
+      const w = pick.r - pick.l;
+      const h = pick.b - pick.t;
+      const cx = w <= 240 ? (pick.l + pick.r) / 2 : Math.min(pick.r - 4, Math.max(pick.l + 4, x));
+      const cy = h <= 80 ? (pick.t + pick.b) / 2 : Math.min(pick.b - 4, Math.max(pick.t + 4, y));
+      api.cursor({ x: cx, y: cy });
+      return { id: pick.id, x: Math.round(cx), y: Math.round(cy) };
+    },
 
+    unsnap() {
+      snapId = null;
+      if (snapRing) snapRing.classList.add("__vb-snap-hide");
+    },
     hideCursor() {
       api.cursor({ visible: false });
     },
