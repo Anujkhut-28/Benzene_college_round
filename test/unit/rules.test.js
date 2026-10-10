@@ -141,6 +141,21 @@ test("a navigation rule always carries a URL, so it can never wait forever", () 
   }
 });
 
+test("recognizes the added phrasings and destinations", () => {
+  assert.equal(intentOf("switch to the last tab"), "switch_tab");
+  assert.equal(intentOf("open another tab"), "open_new_tab");
+  assert.equal(intentOf("read on"), "scroll_down");
+  assert.equal(intentOf("yep"), "confirm");
+  assert.equal(intentOf("nope"), "cancel");
+  assert.equal(intentOf("look for cheap flights"), "search_web");
+  assert.equal(intentOf("pick the second link"), "click_element");
+  assert.equal(intentOf("type in my email"), "type_into_field");
+  assert.equal(recognize("open imdb").url_span.choice, "https://www.imdb.com/");
+  assert.equal(recognize("take me to news ycombinator").url_span.choice, "https://news.ycombinator.com/");
+  assert.equal(recognize("visit can i use").url_span.choice, "https://caniuse.com/");
+  assert.equal(recognize("go to frcrce").url_span.choice, "https://frcrce.ac.in/");
+});
+
 test("recognizes ordinals for element picking", () => {
   assert.equal(recognize("click the first result").ordinal, 0);
   assert.equal(recognize("click the second link").ordinal, 1);

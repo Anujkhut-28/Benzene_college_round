@@ -1,3 +1,12 @@
+/**
+ * Rule-based fast path for the everyday commands.
+ *
+ * Everything here answers in microseconds without asking the model, so it cuts both the latency of
+ * every utterance and the number of billed model requests (a ruled command never reaches the
+ * model). Anything not matched here returns null and falls through to the model untouched, so the
+ * rules may be as narrow as they like: a false negative only costs a request, a false positive
+ * would act on a guess.
+ */
 const FILLER = /\b(please|thanks|thank you|now|okay|ok|um|uh|hey|lets|let us)\b/g;
 
 import { SITE_PATHS } from "./constants.js";
@@ -12,16 +21,16 @@ export function normalizeCommand(text) {
 }
 
 const RULES = [
-  { intent: "go_back", re: /^(go |take me )?back$|^(go )?back to|^undo( that| this| it)?$|^(go )?previous( page)?$|^previous page$|^back$|^undo$|^previous$/ },
-  { intent: "go_forward", re: /^(go )?forward$|^redo( that| this| it)?$|^redo$|^forward$/ },
-  { intent: "reload", re: /^(re)?load( the (page|website|site))?$|^refresh( the (page|website|site))?$|^refresh$|^reload$|^reload page$|^refresh page$/ },
-  { intent: "open_new_tab", re: /^(open|make|start|give me|give me a)?\s*(a |another |one more )?new (browser )?(tab|window)( please)?$/ },
-  { intent: "close_tab", re: /^(close|quit|exit)( this| the)? (tab|window|page)$|^close tab$|^close this tab$|^close the tab$/ },
-  { intent: "switch_tab", re: /^(next|previous|prev|other|another|second) tab$|^switch tab$|^switch (to )?(the )?(next|previous|other) tab$|^go to the other tab$|^change tab$/ },
-  { intent: "press_enter", re: /^(press |hit |push )?(enter|return)( key)?$|^submit( it)?$|^hit submit$|^press submit$/ },
-  { intent: "scroll_down", re: /^(scroll |page |swipe )?down( a (bit|little))?$|^scroll down$|^go (further |farther )?down$|^down( a (bit|little))?$|^more$|^keep going$|^continue down$|^see more$|^scroll to the (bottom|end)$|^go to the (bottom|end)$|^bottom of the page$|^jump to the (bottom|end)$|^all the way down$/ },
-  { intent: "scroll_up", re: /^(scroll |page |swipe )?up( a (bit|little))?$|^scroll up$|^go (back )?up$|^up( a (bit|little))?$|^less$|^keep going up$|^continue up$|^scroll to the top$|^go to the top$|^back to the top$|^jump to the top$|^top of the page$/ },
-  { intent: "navigate_url", url: "https://example.com/", re: /^(go |take me )?back to (the )?(home|homepage|start)$|^go home$|^take me home$|^go to (the )?home ?page$/ },
+  { intent: "go_back", re: /^(go |take me |get me )?back$|^(go |get )?back to|^undo( that| this| it)?$|^(go )?previous( page)?$|^previous page$|^back$|^undo$|^previous$|^return( to (the )?previous)?$|^take me back$|^go back( one| 1)?$/ },
+  { intent: "go_forward", re: /^(go )?forward$|^redo( that| this| it)?$|^redo$|^forward$|^move forward$/ },
+  { intent: "reload", re: /^(re)?load( the (page|website|site))?$|^refresh( the (page|website|site|tab))?$|^refresh$|^reload$|^reload page$|^refresh page$|^reload( it| this| the site)?$|^refresh( it| this)$/ },
+  { intent: "open_new_tab", re: /^(open|make|start|give me|give me a|launch|open up)?\s*(a |another |one more |new )?new (browser |private |incognito )?(tab|window)( please)?$|^(open|start|make)?\s*(another|one more|a new) (browser |private |incognito )?(tab|window)$/ },
+  { intent: "close_tab", re: /^(close|quit|exit|shut)( this| that| the| my)? (tab|window|page)$|^close (it|that)$|^shut (this|that|the) (tab|window|page)$/ },
+  { intent: "switch_tab", re: /^(next|previous|prev|other|another|second|last|first|third) tab$|^switch tab$|^switch (to )?(the )?(next|previous|other|first|second|last) tab$|^go to the other tab$|^change tab$|^switch (windows|tabs)$|^go (to )?(next|previous|prev) tab$/ },
+  { intent: "press_enter", re: /^(press |hit |push |tap )?(enter|return)( key)?$|^submit( it| that| this)?$|^hit submit$|^press submit$|^go$|^send (it|that)$/ },
+  { intent: "scroll_down", re: /^(scroll |page |swipe |jump )?down( a (bit|little))?$|^scroll down$|^go (further |farther |down )*down$|^down( a (bit|little))?$|^more$|^keep going$|^continue down$|^see more$|^show more$|^scroll to the (bottom|end)$|^go to the (bottom|end)$|^bottom of the page$|^jump to the (bottom|end)$|^all the way down$|^read (more|on)$|^next( screen| page)?$/ },
+  { intent: "scroll_up", re: /^(scroll |page |swipe |jump )?up( a (bit|little))?$|^scroll up$|^go (back )?up$|^up( a (bit|little))?$|^less$|^keep going up$|^continue up$|^scroll to the top$|^go to the top$|^back to the top$|^jump to the top$|^top of the page$|^read (less|earlier)$|^previous (screen| page)$/ },
+  { intent: "navigate_url", url: "https://example.com/", re: /^(go |take me )?back to (the )?(home|homepage|start)$|^go home$|^take me home$|^go to (the )?home ?page$|^home page$/ },
 ];
 
 const SITE_WORDS = {
@@ -35,20 +44,62 @@ const SITE_WORDS = {
   twitter_x: /\b(twitter|tweet)\b/,
   hacker_news: /\b(hacker ?news|hn)\b/,
   example_com: /\bexample (dot )?com\b/,
-};
+  };
 
+const NAV_VERBS = "go to|open|visit|take me to|navigate to|browse|show me|load|start|check out|head to";
+
+// Destinations with no SITE_HOME entry: the rule carries the URL itself, so code still owns every
+// address and Jev never sees one. Spoken on its own after any nav verb ("open imdb", "take me to
+// news ycombinator"), matched against the destination words, not the whole utterance.
 const EXTRA_SITES = [
-  { url: "https://chatgpt.com/", re: /^(open|go to|visit) chat ?gpt$/ },
-  { url: "https://claude.ai/", re: /^(open|go to|visit) claude$/ },
-  { url: "https://www.perplexity.ai/", re: /^(open|go to|visit) perplexity$/ },
-  { url: "https://www.linkedin.com/", re: /^(open|go to|visit) linked ?in$/ },
-  { url: "https://stackoverflow.com/", re: /^(open|go to|visit) stack ?overflow$/ },
-  { url: "https://www.netflix.com/", re: /^(open|go to|visit) netflix$/ },
-  { url: "https://www.google.com/maps", re: /^(open|go to|visit) (google )?maps$/ },
-  { url: "https://web.whatsapp.com/", re: /^(open|go to|visit) whatsapp$/ },
-];
+  ["https://chatgpt.com/", /^(the )?chat ?gpt( app| site)?$/],
+  ["https://claude.ai/", /^claude( ai)?$/],
+  ["https://www.perplexity.ai/", /^perplexity( ai)?$/],
+  ["https://www.linkedin.com/", /^linked ?in$/],
+  ["https://stackoverflow.com/", /^stack ?overflow$/],
+  ["https://www.netflix.com/", /^netflix$/],
+  ["https://www.google.com/maps", /^(google )?maps$/],
+  ["https://web.whatsapp.com/", /^what ?s ?app$/],
+  ["https://www.imdb.com/", /^im ?db$/],
+  ["https://news.ycombinator.com/", /^(news )?y ?combinator( news)?$/],
+  ["https://www.facebook.com/", /^face ?book$/],
+  ["https://www.instagram.com/", /^insta ?gram$/],
+  ["https://www.pinterest.com/", /^pinterest$/],
+  ["https://web.telegram.org/", /^tele ?gram$/],
+  ["https://open.spotify.com/", /^spotify$/],
+  ["https://mail.google.com/", /^(google )?(g ?mail|mail)$/],
+  ["https://drive.google.com/", /^(google )?drive$/],
+  ["https://docs.google.com/", /^(google )?docs?$/],
+  ["https://www.notion.so/", /^notion$/],
+  ["https://www.figma.com/", /^figma$/],
+  ["https://app.slack.com/", /^slack$/],
+  ["https://translate.google.com/", /^(google )?translate$/],
+  ["https://www.weather.com/", /^weather$/],
+  ["https://arxiv.org/", /^arxiv$/],
+  ["https://medium.com/", /^medium$/],
+  ["https://www.yelp.com/", /^yelp$/],
+  ["https://www.walmart.com/", /^wal ?mart$/],
+  ["https://www.ebay.com/", /^e ?bay$/],
+  ["https://www.booking.com/", /^booking( com)?$/],
+  ["https://www.nytimes.com/", /^(the )?new ?york ?times$|^n ?y ?t$/],
+  ["https://www.bbc.com/", /^bbc( news)?$/],
+  ["https://www.coursera.org/", /^coursera$/],
+  ["https://www.khanacademy.org/", /^khan ?academy$/],
+  ["https://caniuse.com/", /^can ?i ?use$/],
+  ["https://developer.mozilla.org/", /^(mdn|mozilla developer( network)?)$/],
+  ["https://pypi.org/", /^pypi$/],
+  ["https://www.npmjs.com/", /^npm(js)?$/],
+  ["https://vercel.com/", /^vercel$/],
+  ["https://www.netlify.com/", /^netlify$/],
+  ["https://dash.cloudflare.com/", /^cloud ?flare$/],
+  ["https://tailwindcss.com/", /^tail ?wind( css)?$/],
+  ["https://react.dev/", /^react(js| dev)?$/],
+  ["https://openai.com/", /^open ?ai$/],
+  ["https://frcrce.ac.in/", /^frcrce$/],
+// the name regexes above are anchored; unwrap them so they can sit inside the full-phrase pattern
+].map(([url, name]) => ({ url, re: new RegExp(`^(?:${NAV_VERBS}) (?:the )?${name.source.replace(/^\^/, "").replace(/\$$/, "")}$`) }));
 
-const VERB_TO_SITE = /^(go to|open|visit|take me to|navigate to|browse|show me|load|start|check out|head to)\s+(the\s+)?/;
+const VERB_TO_SITE = new RegExp(`^(?:${NAV_VERBS})\\s+(the\\s+)?`);
 
 const SEARCH_SITES = [
   "google",
@@ -65,6 +116,9 @@ const SEARCH_SITES = [
   "online",
   "wiki",
   "hn",
+  "im ?db",
+  "stack ?overflow",
+  "news",
 ]
   .sort((a, b) => b.length - a.length)
   .map((s) => `(?:${s})`)
@@ -169,8 +223,8 @@ export function recognize(transcript, { site: snapshotSite = "generic" } = {}) {
     }
   }
 
-  const sm = t.match(new RegExp(`^(?:search|look up|lookup|google|find)(?: on)? (${SEARCH_SITES})(?: for)? (.+)$`))
-    || t.match(new RegExp(`^(?:search|look up|lookup|google|find)(?: on)?(?: for)? (.+)$`));
+  const sm = t.match(new RegExp(`^(?:search|look up|lookup|google|find|look for)(?: on)? (${SEARCH_SITES})(?: for)? (.+)$`))
+    || t.match(new RegExp(`^(?:search|look up|lookup|google|find|look for)(?: on)?(?: for)? (.+)$`));
   if (sm) {
     const withSite = sm.length === 3;
     const siteWord = withSite ? sm[1] : null;
@@ -186,7 +240,7 @@ export function recognize(transcript, { site: snapshotSite = "generic" } = {}) {
     }
   }
 
-  const cm = t.match(/^(?:click|press|tap|select|choose|hit|open|activate)\s+(?:on\s+)?(?:the\s+)?(.+)$/);
+  const cm = t.match(/^(?:click|press|tap|select|choose|hit|open|activate|go to|tap on|pick|pick out)\s+(?:on\s+)?(?:the\s+)?(.+)$/);
   if (cm) {
     const what = cm[1].trim();
     const ordinal = Object.entries(ORDINALS).find(([w]) => new RegExp(`\\b${w}\\b`).test(what));
@@ -197,7 +251,7 @@ export function recognize(transcript, { site: snapshotSite = "generic" } = {}) {
     return out;
   }
 
-  const tm = t.match(/^(?:type|enter|write|put|fill in|fill)\s+(.+?)(?:\s+(?:in|into|on)\s+the\s+(.+))?$/);
+  const tm = t.match(/^(?:type|enter|write|put|fill in|fill|type in|type my)\s+(.+?)(?:\s+(?:in|into|on)\s+the\s+(.+))?$/);
   if (tm) {
     const text = tm[1].trim();
     if (text && !/^(in|into|the|a|an|my|it|this|that)$/.test(text)) {
@@ -208,11 +262,11 @@ export function recognize(transcript, { site: snapshotSite = "generic" } = {}) {
     }
   }
 
-  if (/^(confirm|yes( do it)?|go ahead|approve|do it|confirm that|yes please do it)$/.test(t)) {
+  if (/^(confirm|yes( do it)?|go ahead|approve|do it|confirm that|yes please do it|yeah|yep|sure( do it)?|affirmative|confirm it)$/.test(t)) {
     out.intent = high("confirm");
     return out;
   }
-  if (/^(cancel|never ?mind|stop|no|abort|forget it|dont|do not)$/.test(t)) {
+  if (/^(cancel|never ?mind|stop|no|abort|forget it|dont|do not|nevermind that|stop that|cancel that|no thanks|nope)$/.test(t)) {
     out.intent = high("cancel");
     return out;
   }
