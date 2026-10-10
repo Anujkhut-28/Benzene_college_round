@@ -183,6 +183,11 @@ export class BrowserManager {
   }
 
  async pointer(opts = {}) {
+    // Remember where the user is looking. Scrolling aims the wheel with this, which is what makes
+    // "scroll down" move the chat pane under the cursor rather than always the whole window.
+    if (Number.isFinite(opts.x) && Number.isFinite(opts.y)) {
+      this.pointerPos = { x: opts.x, y: opts.y };
+    }
     // Clicks get their own slot so a following move message can never overwrite one.
     if (opts.click) this._clickNext = opts;
     else this._nextPointer = opts;

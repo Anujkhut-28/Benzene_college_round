@@ -35,6 +35,26 @@ async function maybeNewTab(browser, before) {
  * @param {import('./browser.js').BrowserManager} browser
  * @returns {Promise<{ok: boolean, detail?: string}>}
  */
+/**
+ * Where a scroll should land. The tracked cursor wins, because the natural gesture is "look at
+ * the chat pane and say scroll down". Falls back to a named element, then the middle of the
+ * screen. Coordinates are viewport-relative, which is what mouse.move and wheel both want.
+ */
+async function resolveScrollPoint(page, browser, action) {
+  try {
+    const vp = page.viewportSize() || { width: 1280, height: 900 };
+    const cur = browser.pointerPos;
+    if (cur && cur.x > 0 && cur.y > 0) return { x: cur.x, y: cur.y };
+    if (action.targetId) {
+      const box = await locatorFor(page, action.targetId).boundingBox().catch(() => null);
+      if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    }
+    return { x: Math.round(vp.width / 2), y: Math.round(vp.height / 2) };
+  } catch {
+    return null;
+  }
+}
+
 export async function execute(action, browser) {
   const page = await browser.ensurePage();
   const label = describe(action);
@@ -100,14 +120,93 @@ export async function execute(action, browser) {
       await browser.overlay("toast", label);
       const loc = locatorFor(page, action.targetId);
       await new Promise((r) => setTimeout(r, 180)); // let the human see the highlight
+      const how = action.how || "click";
+
+      // Hovering is not clicking: the pointer arrives, but no click event fires.
+      if (how === "hover") {
+        await loc.hover({ timeout: 4000 }).catch(() => {});
+        return { ok: true, detail: "hovered" };
+      }
+
+      if (how === "drag") {
+        // Drag needs somewhere to go: either a second named target, or a direction from here,
+        // which is how you move a slider or a scrollbar thumb.
+        const from = await loc.boundingBox().catch(() => null);
+        if (!from) return { ok: false, detail: "cannot drag that" };
+        const startX = from.x + from.width / 2;
+        const startY = from.y + from.height / 2;
+        let endX = startX + (action.dx ?? 140);
+        let endY = startY + (action.dy ?? 0);
+        // "drag X onto the trash": the drop target is matched by text in the page, since the
+        // model answers one target per pass and cannot name a second one here.
+        let dropId = action.dropId;
+        if (!dropId && action.dropText) {
+          dropId = await page
+            .evaluate(({ sel, wanted }) => {
+              const w = String(wanted).toLowerCase().replace(/\bthe\b|\bthat\b|\bthis\b/g, "").trim();
+              if (!w) return null;
+              const all = Array.from(document.querySelectorAll(sel));
+              const hit =
+                all.find((el) => (el.getAttribute("aria-label") || "").toLowerCase().includes(w)) ||
+                all.find((el) => (el.textContent || "").toLowerCase().replace(/\s+/g, " ").includes(w));
+              if (!hit) return null;
+              let id = hit.getAttribute("data-vb-id");
+              if (!id) {
+                window.__vbNextId = window.__vbNextId || 1;
+                id = `vb${window.__vbNextId++}`;
+                hit.setAttribute("data-vb-id", id);
+              }
+              return id;
+            }, { sel: NUMBERABLE_SELECTOR, wanted: action.dropText })
+            .catch((err) => {
+              // Not silently: a drag that quietly lands 140px away is worse than one that says why.
+              console.warn(`drop target "${action.dropText}" not found: ${err.message || err}`);
+              return null;
+            });
+        }
+        if (dropId) {
+          const to = await locatorFor(page, dropId).boundingBox().catch(() => null);
+          if (to) {
+            endX = to.x + to.width / 2;
+            endY = to.y + to.height / 2;
+          } else {
+            console.warn(`drop target ${dropId} has no box on screen`);
+          }
+        }
+        // "drag X right" has no target, only a direction.
+        const D = { right: [140, 0], left: [-140, 0], up: [0, -100], down: [0, 100] };
+        if (action.dragDir && D[action.dragDir]) {
+          endX = startX + D[action.dragDir][0];
+          endY = startY + D[action.dragDir][1];
+        }
+        await page.mouse.move(startX, startY);
+        await page.mouse.down();
+        // Intermediate moves: most drag handlers never see a drag without them.
+        for (let i = 1; i <= 8; i++) {
+          await page.mouse.move(startX + ((endX - startX) * i) / 8, startY + ((endY - startY) * i) / 8);
+        }
+        await page.mouse.up();
+        return { ok: true, detail: `dragged ${Math.round(endX - startX)},${Math.round(endY - startY)}` };
+      }
+
+      const opts = { timeout: 4000 };
+      if (how === "right") opts.button = "right";
+      if (how === "double") opts.clickCount = 2;
+      if (how === "new_tab") opts.button = "middle";
+      if (how === "new_tab_ctrl") opts.modifiers = ["Control"];
+
       try {
-        await loc.click({ timeout: 4000 });
+        await loc.click(opts);
       } catch {
-        await loc.evaluate((el) => el.click());
+        // A synthetic DOM click cannot express right/double/middle/modifier, so only the plain
+        // path is faked. Failing loudly beats silently doing the wrong thing to the page.
+        if (how === "click") await loc.evaluate((el) => el.click());
+        else throw new Error(`${how} on that element failed`);
       }
       await settle(page);
       await maybeNewTab(browser, before);
-      return { ok: true, detail: browser.page.url() };
+      const extra = browser.pages.length - before.length;
+      return { ok: true, detail: browser.page.url() + (extra > 0 ? ` (+${extra} tab)` : "") };
     }
 
     case "type_into_field": {
@@ -179,24 +278,64 @@ export async function execute(action, browser) {
       await settle(page);
       return { ok: true, detail: page.url() };
 
+    case "stop_scrolling":
+      return { ok: true, detail: "stopped" };
+
+    case "start_scrolling":
+      // The controller owns the repeat loop; nothing to do here but say so.
+      return { ok: true, detail: `scrolling ${action.direction || "down"}` };
+
     case "scroll_down":
-    case "scroll_up": {
-      const dir = action.type === "scroll_down" ? 1 : -1;
+    case "scroll_up":
+    case "scroll_left":
+    case "scroll_right": {
       await browser.overlay("toast", label);
-      await page.evaluate(
-        ([dir, amount]) => {
-          const vh = window.innerHeight;
-          if (amount === "end") {
-            window.scrollTo({ top: dir > 0 ? document.documentElement.scrollHeight : 0, behavior: "smooth" });
-          } else {
-            const px = amount === "little" ? vh * 0.35 : vh * 0.85;
-            window.scrollBy({ top: dir * px, behavior: "smooth" });
-          }
+      const vertical = action.type !== "scroll_left" && action.type !== "scroll_right";
+      const dir = action.type === "scroll_down" || action.type === "scroll_right" ? 1 : -1;
+      const amount = action.amount || "page";
+
+      // Where to scroll: the tracked cursor if there is one, else a named element, else centre.
+      // This is what makes chat panes, modals and feeds scroll - the wheel goes wherever the
+      // user is looking, and whatever is under the point takes it, not the whole window.
+      const point = await resolveScrollPoint(page, browser, action);
+      if (point) await page.mouse.move(point.x, point.y);
+
+      if (amount === "end") {
+        const moved = await page.evaluate(
+          ([x, y, vertical, dir]) => {
+            // Walk up from the point to the nearest thing that can actually scroll this way.
+            let el = document.elementFromPoint(x, y);
+            while (el) {
+              const canV = el.scrollHeight > el.clientHeight + 4;
+              const canH = el.scrollWidth > el.clientWidth + 4;
+              if (vertical ? canV : canH) break;
+              el = el.parentElement;
+            }
+            const target = el && (vertical ? el.scrollHeight > el.clientHeight + 4 : el.scrollWidth > el.clientWidth + 4) ? el : document.scrollingElement || document.documentElement;
+            if (vertical) target.scrollTo({ top: dir > 0 ? target.scrollHeight : 0, behavior: "smooth" });
+            else target.scrollTo({ left: dir > 0 ? target.scrollWidth : 0, behavior: "smooth" });
+            return target === document.scrollingElement || target === document.documentElement ? "page" : (target.className || target.tagName).toString().slice(0, 30);
+          },
+          [point?.x ?? 0, point?.y ?? 0, vertical, dir],
+        );
+        await page.waitForTimeout(400);
+        return { ok: true, detail: `${amount} of ${moved || "page"}` };
+      }
+
+      const step = amount === "little" ? 0.35 : 0.85;
+      const size = page.viewportSize() || { width: 1280, height: 900 };
+      const dx = vertical ? 0 : Math.round(dir * size.width * step);
+      const dy = vertical ? Math.round(dir * size.height * step) : 0;
+      await page.mouse.wheel(dx, dy);
+      await page.waitForTimeout(320);
+      const where = await page.evaluate(
+        ([x, y, vertical]) => {
+          const el = document.elementFromPoint(x, y);
+          return vertical ? `scrollY=${Math.round(window.scrollY)}` : `scrollX=${Math.round(window.scrollX)}`;
         },
-        [dir, action.amount || "page"],
+        [point?.x ?? 0, point?.y ?? 0, vertical],
       );
-      await page.waitForTimeout(350);
-      return { ok: true, detail: `scrollY=${await page.evaluate(() => Math.round(window.scrollY))}` };
+      return { ok: true, detail: where };
     }
 
     case "go_back":

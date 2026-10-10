@@ -63,6 +63,21 @@ const RULES = [
   { intent: "press_key", key: "Control+y", re: /^(press |hit )?control y$/ },
   // Clearing the whole field in one go.
   { intent: "clear_field", re: /^(?:clear|empty|wipe|reset|start over)(?: the| that| this)?(?: box| field| input| search box)?$|^clear (?:it|that text|what i said|what i typed)$|^start (?:that|the) (?:over|again)$/ },
+  // Click flavours. These carry a modifier the plain click cannot express. They still report
+  // intent "click_element" so the model is asked for the target exactly as it is for a plain
+  // click - inventing a new intent name would leave the target unresolved.
+  { intent: "click_element", how: "right", re: /^(right ?click|right click|context menu|open the context menu|secondary click)( on| the)? .+$/ },
+  { intent: "click_element", how: "double", re: /^(double ?click|doubleclick|double tap)( on| the)? .+$/ },
+  { intent: "click_element", how: "hover", re: /^(hover|point at|point to|move (the )?(cursor )?over|show (the )?tooltip for)( on| at| the)? .+$/ },
+  { intent: "click_element", how: "new_tab", re: /^(open|click|activate) .+ (in|on) (a )?new tab$|^open .+ in a new tab$|^new tab (for|with) .+$/ },
+  { intent: "click_element", how: "drag", re: /^drag .+ (onto|to|over|into|towards) .+$|^drag .+ (right|left|up|down)$/ },
+  // Horizontal scrolling, and scrolling that keeps going until told to stop.
+  { intent: "scroll_left", re: /^(scroll |page |swipe )?left( a (bit|little))?$|^scroll left$|^go left$|^left( a bit)?$|^more to the left$/ },
+  { intent: "scroll_right", re: /^(scroll |page |swipe )?right( a (bit|little))?$|^scroll right$|^go right$|^right( a bit)?$|^more to the right$/ },
+  { intent: "scroll_stop", re: /^(stop|halt|pause|quit)\s*(scrolling|rolling)$|^stop (scrolling|that scrolling|rolling)$|^that'? ?s enough$|^enough scrolling$|^not (any )?more$|^hold on$|^wait$/ },
+  // Continuous scrolling: keep going until "stop". Separate from the one-shot "scroll down"
+  // so that saying "more" does not suddenly start moving on its own.
+  { intent: "scroll_start", re: /^keep scrolling( down)?$|^keep scrolling (down|up|left|right)$|^start scrolling( down| up)?$|^scroll (away|on) (down|up)$|^keep going( down| up)?$/ },
 ];
 
 const SITE_WORDS = {
@@ -211,6 +226,20 @@ export function recognize(transcript, { site: snapshotSite = "generic" } = {}) {
     }
     // Keys travel as a target-free payload; code owns the mapping so the model never picks them.
     if (rule.key) out.press_key = { key: rule.key };
+    if (rule.intent === "scroll_start") {
+      out.scroll_direction = /(up|left|right)/.exec(t)?.[1] ?? "down";
+    }
+    // Click flavours likewise: the intent stays click_element so the model still resolves a
+    // target, and the flavour rides along for the policy to attach to the action.
+    if (rule.how) {
+      out.how = rule.how;
+      // "drag the file onto the trash" - the drop target is matched by text in the page rather
+      // than asking the model for a second element, which it cannot answer in one pass.
+      const drag = t.match(/^drag .+? (?:onto|to|over|into|towards) (.+)$/);
+      if (drag) out.drop_text = drag[1];
+      const dir = t.match(/^drag .+? (right|left|up|down)$/);
+      if (dir) out.drag_dir = dir[1];
+    }
     out.intent = high(rule.intent);
     return out;
   }

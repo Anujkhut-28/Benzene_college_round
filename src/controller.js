@@ -304,6 +304,20 @@ export class Controller extends EventEmitter {
           this._log("info", policy.action.on ? "listening again" : "stopped listening");
           break;
         }
+        // Continuous scrolling is a loop owned here, not a browser action: it repeats a plain
+        // scroll until "stop scrolling" arrives or the page runs out of room.
+        if (policy.action.type === "start_scrolling") {
+          this._consume(utt, textAtRequest);
+          this._startContinuousScroll(policy.action.direction || "down");
+          break;
+        }
+        if (policy.action.type === "stop_scrolling") {
+          this._consume(utt, textAtRequest);
+          const was = this._stopContinuousScroll();
+          this._log("info", was ? "stopped scrolling" : "was not scrolling");
+          this.emit("say", { text: was ? "Stopped scrolling." : "" });
+          break;
+        }
         actionResult = await this._runAction(policy.action, { decision, utterance: utt });
         break;
       case "confirm":
@@ -364,6 +378,37 @@ export class Controller extends EventEmitter {
   }
 
   /**
+   * "Keep scrolling" repeats a plain scroll on a timer. It has to be stoppable by voice, so the
+   * timer is tracked and cancelled by "stop scrolling" and by navigating away — leaving the page
+   * moving on its own after the user has moved on is disorienting.
+   */
+  _startContinuousScroll(direction) {
+    this._stopContinuousScroll();
+    const type = { up: "scroll_up", left: "scroll_left", right: "scroll_right" }[direction] ?? "scroll_down";
+    let still = 0;
+    this._scrollTimer = setInterval(async () => {
+      if (this.busy) return;
+      try {
+        const res = await this._execute({ type, amount: "page", label: `scroll ${direction}` }, this.browser);
+        // Stop once the page stops moving: that is the bottom, or the right-hand edge.
+        if (still++ > 40) this._stopContinuousScroll();
+        this._recordContext({ action: { type }, ok: res.ok, detail: res.detail, said: "keep scrolling" });
+      } catch {
+        this._stopContinuousScroll();
+      }
+    }, 420);
+    this._log("act", `scrolling ${direction} until you say stop`);
+    this.emit("say", { text: `Scrolling ${direction}. Say stop to stop.` });
+  }
+
+  _stopContinuousScroll() {
+    if (!this._scrollTimer) return false;
+    clearInterval(this._scrollTimer);
+    this._scrollTimer = null;
+    return true;
+  }
+
+  /**
    * Dictation follows the caret. Clicking a text field or typing into one turns it on; Tab and
    * Escape leave it on, because filling in a form means dictating, tabbing, dictating again.
    * Anything that navigates away, or a microphone command, turns it off.
@@ -372,6 +417,8 @@ export class Controller extends EventEmitter {
     const type = action?.type;
     if (type === "navigate_url" || type === "go_back" || type === "set_mic" || type === "press_enter") {
       this.dictation = false;
+      // Navigating away must not leave the page scrolling itself.
+      this._stopContinuousScroll();
       return;
     }
     if (type === "press_key") {

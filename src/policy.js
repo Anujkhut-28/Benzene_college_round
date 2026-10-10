@@ -186,7 +186,12 @@ export function evaluatePolicy({ answers, candidates, snapshot, silentMs = 0, is
     // "safe". Voice clicks therefore bypassed the confirmation entirely while pinch clicks,
     // which go through browser.clickElement(), were still guarded. Check the target element's
     // own text as well, so "click place order" asks for a spoken "confirm" on both paths.
-    if (action.type === "click_element" && !action.confirmed) {
+    // Only a click that actually fires needs the spoken confirmation. Hovering moves nothing and
+    // a right-click opens the context menu rather than activating anything, so both are exempt.
+    // Double-click is NOT exempt: it fires two click events, so it activates like a plain click.
+    const EXEMPT = new Set(["hover", "right"]);
+    const flavour = action.how ?? "click";
+    if (action.type === "click_element" && !EXEMPT.has(flavour) && !action.confirmed) {
       const targetEl = (snapshot?.elements ?? []).find((e) => e.id === action.targetId);
       if (isDestructiveElement(targetEl)) {
         check(reasons, "destructive_text", action.label || action.targetId, "-", false, "risky button text needs confirmation");
@@ -268,6 +273,14 @@ function buildAction({ intentName, answers, candidates, snapshot, reasons, exclu
     case "hide_numbers":
       return { decision: "act", action: { type: "hide_numbers", label: "hid the numbers" } };
 
+    case "scroll_stop":
+      return { decision: "act", action: { type: "stop_scrolling", label: "stopped scrolling" } };
+
+    case "scroll_start": {
+      const dir = answers.scroll_direction ?? "down";
+      return { decision: "act", action: { type: "start_scrolling", direction: dir, label: `scrolling ${dir}` } };
+    }
+
     case "stop_listening":
       return { decision: "act", action: { type: "set_mic", on: false, label: "stopped listening" } };
 
@@ -315,7 +328,19 @@ function buildAction({ intentName, answers, candidates, snapshot, reasons, exclu
       if (targetOk) {
         const label = elementLabel(elements, chosen);
         check(reasons, "target", `${chosen} (${r2(target.confidence)})`, T.targetConfidence, true, label);
-        return { decision: "act", action: { type: intentName, targetId: chosen, text, label } };
+        // Right/double/hover/drag/new-tab all ride on click_element: the model chose the
+        // element the ordinary way, and the rule table supplies how to act on it.
+        const how = answers.how;
+        const action = { type: intentName, targetId: chosen, text, label };
+        if (intentName === "click_element" && how) {
+          action.how = how;
+          if (how === "drag") {
+            if (answers.drop_text) action.dropText = answers.drop_text;
+            if (answers.drag_dir) action.dragDir = answers.drag_dir;
+          }
+          action.label = `${how} ${label}`;
+        }
+        return { decision: "act", action };
       }
 
       // Typing with no confident target: fall back to the page's search box.

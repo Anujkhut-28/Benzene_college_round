@@ -188,6 +188,42 @@ test("'show numbers' numbers the page however it is phrased", () => {
   }
 });
 
+test("click flavours keep click_element so the model still resolves a target", () => {
+  const howOf = (p) => {
+    const r = recognize(p);
+    return r?.intent?.choice === "click_element" ? r.how : r?.intent?.choice ?? null;
+  };
+  assert.equal(howOf("right click on the file"), "right");
+  assert.equal(howOf("open the context menu on that"), "right");
+  assert.equal(howOf("double click the icon"), "double");
+  assert.equal(howOf("hover over the menu"), "hover");
+  assert.equal(howOf("show the tooltip for the save button"), "hover");
+  assert.equal(howOf("open docs in a new tab"), "new_tab");
+  assert.equal(howOf("drag the file onto the bin"), "drag");
+  assert.equal(howOf("drag it right"), "drag");
+  // A plain click is untouched and carries no flavour.
+  assert.equal(howOf("click the first link"), undefined);
+  assert.equal(intentOf("click the first link"), "click_element");
+  // The drop target and direction travel with the command.
+  assert.equal(recognize("drag the file onto the recycle bin").drop_text, "the recycle bin");
+  assert.equal(recognize("drag it right").drag_dir, "right");
+  assert.equal(recognize("drag it down").drag_dir, "down");
+});
+
+test("horizontal and continuous scrolling are their own intents", () => {
+  assert.equal(intentOf("scroll right"), "scroll_right");
+  assert.equal(intentOf("scroll left"), "scroll_left");
+  assert.equal(intentOf("go right"), "scroll_right");
+  // "more" stays a single scroll; only an explicit keep-scrolling repeats.
+  assert.equal(intentOf("more"), "scroll_down");
+  assert.equal(intentOf("keep scrolling"), "scroll_start");
+  assert.equal(intentOf("keep scrolling up"), "scroll_start");
+  assert.equal(recognize("keep scrolling up").scroll_direction, "up");
+  assert.equal(recognize("keep scrolling").scroll_direction, "down");
+  assert.equal(intentOf("stop scrolling"), "scroll_stop");
+  assert.equal(intentOf("that's enough"), "scroll_stop");
+});
+
 test("keyboard commands reach the browser as keys and chords", () => {
   const keyOf = (p) => {
     const r = recognize(p);

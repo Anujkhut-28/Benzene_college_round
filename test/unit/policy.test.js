@@ -195,6 +195,38 @@ test("destructive element actions require confirmation; confirm/cancel resolve t
   assert.equal(no.decision, "cancel");
 });
 
+test("click flavours only need confirmation when they actually fire the button", () => {
+  const shop = {
+    ...snapshot,
+    elements: [
+      { id: "s1", role: "button", text: "Place order" },
+      { id: "s2", role: "button", text: "Add to basket" },
+      { id: "s3", role: "link", text: "Continue" },
+    ],
+  };
+  const go = (id, how) =>
+    evaluatePolicy({
+      answers: answers({ intent: ch("click_element", 0.95), target: ch(id, 0.95), destructive: { noul: 0.1 }, how }),
+      candidates,
+      snapshot: shop,
+    });
+  // These fire the button, so the spoken confirmation still applies. Double-click fires two
+  // click events and counts as activating, which it would not if the gate only looked at "click".
+  for (const how of [undefined, "double", "new_tab", "drag"]) {
+    assert.equal(go("s1", how).decision, "confirm", `${how ?? "click"} on Place order must ask`);
+  }
+  // Hovering activates nothing and a right-click opens the context menu; neither needs a confirm.
+  for (const how of ["hover", "right"]) {
+    assert.equal(go("s1", how).decision, "act", `${how} on Place order must not ask`);
+  }
+  // Ordinary controls stay one command away whatever the flavour.
+  for (const id of ["s2", "s3"]) {
+    for (const how of [undefined, "hover", "right", "double"]) {
+      assert.equal(go(id, how).decision, "act", `${id} ${how ?? "click"} must act`);
+    }
+  }
+});
+
 test("destructive flag does not block navigation or scrolling", () => {
   const a = answers({ intent: ch("navigate_url", 0.95), site: ch("github", 0.9), destructive: { noul: 0.9 } });
   assert.equal(evaluatePolicy({ answers: a, candidates, snapshot }).decision, "act");
