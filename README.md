@@ -5,13 +5,22 @@ Accessibility-focused browsing for people with motor impairments. Control a real
 
 - **Voice navigation** — say "go to wikipedia", "search for alan turing", "scroll down", "go back".
 - **Head & eye tracking** — look around to move the cursor smoothly in the controlled window.
-- **Hands-free clicking** — click with a thumb-and-finger pinch.
-- **Webcam eye tracking** — move your eyes to aim, pinch to click.
+- **Hands-free clicking** — click with a thumb-and-finger pinch, or point and say a number.
+- **"Show numbers"** — badge everything clickable, then say "click 14". No guessing involved.
+- **Dictation** — click into a field and just talk; it types where the caret is.
+- **Scrolling that follows your eyes** — look at a chat pane and say "scroll down"; it scrolls
+  that pane, not the page.
 - **Speech to text** — live transcripts stream into the page (Chrome/Edge Web Speech API).
+- **Spoken replies** — prompts and confirmations are spoken, not only shown.
 - **Safe selection** — risky actions (buy, submit, delete, send) always require a spoken
-  *"confirm"*, and clicks on such buttons are refused outright.
+  *"confirm"*, whichever way they were aimed.
 - **Runs entirely offline** — the decision model is embedded in the Node process. No API key,
   no cloud, no LM Studio.
+
+> **One caveat on "offline":** the *decision model* is local, but the microphone uses the browser's
+> Web Speech API, which in Chrome and Edge sends your audio to Google's speech service. Everything
+> else — screenshots, page contents, the model — stays on the machine. Using a local recognizer is
+> the one part not yet built.
 
 ## Quick start
 
@@ -58,6 +67,14 @@ Two windows appear:
 
 Type a command into the control page if you have no microphone — same code path as speech.
 
+Two things on the control page are worth turning on:
+
+- **Snap to elements** (on by default) — the cursor is drawn onto whatever clickable thing it is
+  near, so aiming is forgiving. It is also what makes scrolling follow your eyes.
+- **Speak replies** — confirmations and errors are read aloud as well as shown.
+
+If you would rather not be heard at all, say **"stop listening"**.
+
 ### Eye tracking
 
 Click **Enable eye control** and allow the camera. Move your **eyes** to move the cursor in the
@@ -100,19 +117,103 @@ The tracker uses MediaPipe Face Landmarker in the browser; no video leaves the m
 
 ## What you can say
 
+### Pointing at things — the most reliable way to click
+
+Picking an element by name puts the whole task on the model matching words to an element. Numbering
+what is on screen removes that dependency entirely.
+
+| say | what happens |
+| --- | --- |
+| "show numbers" | badges every link, button and field in visual order |
+| "click 14" | clicks the numbered item — deterministic, no model call |
+| "hide numbers" | clears the badges |
+
+Numbers work to 60, as digits or words ("fourteen", "twenty three").
+
+### Navigating and scrolling
+
 | say | what happens |
 | --- | --- |
 | "go to wikipedia" / "open youtube" / "open claude" | navigates (site list, spoken domain, or known URL) |
 | "open shorts" / "open subscriptions" / "open my history" | goes to that page inside YouTube |
 | "search for alan turing" | uses the page's search box, else DuckDuckGo |
 | "search youtube for lofi beats" | site-specific search |
-| "click the first result" / "click the second link" | clicks the element the model picks, or shows numbered overlays |
-| "type hello world into the search box" | types verbatim |
-| "scroll down a bit" / "scroll to the bottom" | scrolls |
 | "go back" / "go forward" / "reload" | history |
 | "open a new tab" / "close this tab" / "next tab" | tabs |
-| "click place order" | refused — say **"confirm"** |
+| "find on page" is not supported — use the browser's own Ctrl+F | — |
+
+Scrolling is aimed by **where the cursor is**, so look at what you want to move. A chat pane, modal
+or feed scrolls instead of the page whenever it is under the cursor.
+
+| say | what happens |
+| --- | --- |
+| "scroll down" / "scroll up" / "scroll a bit" | scrolls whatever is under the cursor |
+| "scroll right" / "scroll left" | horizontal scrolling |
+| "scroll to the bottom" / "go to the top" | jumps to the end of that container |
+| "keep scrolling" | repeats until you say "stop scrolling" |
+
+A bare "up", "down", "left" or "right" scrolls. To move the caret instead, name the arrow.
+
+### Clicking
+
+Put the flavour first. Hovering and right-clicking do not activate anything, so they are never
+treated as risky; a double-click fires two click events and so still asks for confirmation.
+
+| say | what happens |
+| --- | --- |
+| "click the first result" / "click sign in" | clicks the element the model picks, or shows numbered overlays |
+| "right click on the file" | context menu |
+| "double click the icon" | double-click |
+| "hover over the menu" | moves the pointer only, clicks nothing |
+| "open docs in a new tab" | opens the link in a new tab |
+| "drag the file onto the bin" | drags to a named drop target |
+| "drag it right" / "drag it down" | drags in a direction — this is how you move a slider |
+
+### Typing and the keyboard
+
+| say | what happens |
+| --- | --- |
+| "type hello world into the search box" | replaces the contents of the named field |
+| "clear the box" | empties the focused field |
+| "tab" | moves to the next field |
+| "escape" / "dismiss that" | closes a dialog, menu or popup |
+| "backspace" / "delete" | edits |
+| "up arrow" / "press down" / "home" / "end" / "space" | caret movement (a bare "up" scrolls) |
+| "select all" / "copy" / "paste" / "cut" | real browser chords |
+| "control z" / "control y" | text undo and redo |
+
+**Dictation.** Click into any text field — with the cursor, a pinch, or "click the email box" — and
+from then on just **say the words**. They are typed where the caret is, and they **append** rather
+than replacing what is there. Filling in a form then goes:
+
+```
+click the Full name field → "Alan Turing" → "tab" → "alan@example.com" → "tab"
+```
+
+Dictation is off until you click a field, and it stops at anything that navigates away. A real
+command always wins over being typed into a box, so "show numbers" never types itself.
+
+### The microphone and spoken replies
+
+| say | what happens |
+| --- | --- |
+| "stop listening" / "pause listening" | mutes the microphone |
+| "start listening" / "wake up" | unmutes it |
+
+Prompts, pending confirmations and failures are **spoken as well as shown**, since a toast is no
+use to someone who cannot see the screen. Turn that off with the *Speak replies* checkbox.
+
+### Safety
+
+| say | what happens |
+| --- | --- |
+| "click place order" | refused — waits for **"confirm"** |
+| "confirm" / "cancel" | resolves or drops the pending action |
 | "so anyway I think we should get lunch" | ignored |
+
+A spoken click on anything whose label reads like a risk (place order, checkout, buy now, delete,
+send message, subscribe, sign in) requires a confirmation, whichever way it was aimed — by name, by
+number, or by cursor. Pinch clicks are guarded the same way.
 
 Common commands are recognised by a rule-based fast path in microseconds. Anything the rules do not
 recognise goes to the decision model, which reads intent, target, site and completeness in a single

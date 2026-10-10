@@ -28,8 +28,8 @@ const RULES = [
   { intent: "close_tab", re: /^(close|quit|exit|shut)( this| that| the| my)? (tab|window|page)$|^close (it|that)$|^shut (this|that|the) (tab|window|page)$/ },
   { intent: "switch_tab", re: /^(next|previous|prev|other|another|second|last|first|third) tab$|^switch tab$|^switch (to )?(the )?(next|previous|other|first|second|last) tab$|^go to the other tab$|^change tab$|^switch (windows|tabs)$|^go (to )?(next|previous|prev) tab$/ },
   { intent: "press_enter", re: /^(press |hit |push |tap )?(enter|return)( key)?$|^submit( it| that| this)?$|^hit submit$|^press submit$|^go$|^send (it|that)$/ },
-  { intent: "scroll_down", re: /^(scroll |page |swipe |jump )?down( a (bit|little))?$|^scroll down$|^go (further |farther |down )*down$|^down( a (bit|little))?$|^more$|^keep going$|^continue down$|^see more$|^show more$|^scroll to the (bottom|end)$|^go to the (bottom|end)$|^bottom of the page$|^jump to the (bottom|end)$|^all the way down$|^read (more|on)$|^next( screen| page)?$/ },
-  { intent: "scroll_up", re: /^(scroll |page |swipe |jump )?up( a (bit|little))?$|^scroll up$|^go (back )?up$|^up( a (bit|little))?$|^less$|^keep going up$|^continue up$|^scroll to the top$|^go to the top$|^back to the top$|^jump to the top$|^top of the page$|^read (less|earlier)$|^previous (screen| page)$/ },
+  { intent: "scroll_down", re: /^(scroll |page |swipe |jump )?down( a (bit|little))?$|^scroll down$|^go (further |farther |down )*down$|^down( a (bit|little))?$|^more$|^keep going$|^continue down$|^see more$|^show more$|^scroll to the (bottom|end)$|^go to the (bottom|end)$|^bottom of the page$|^jump to the (bottom|end)$|^all the way down$|^read (more|on)$|^next( screen| page)?$|^scroll a (bit|little)$|^down a (bit|little)$/ },
+  { intent: "scroll_up", re: /^(scroll |page |swipe |jump )?up( a (bit|little))?$|^scroll up$|^go (back )?up$|^up( a (bit|little))?$|^less$|^keep going up$|^continue up$|^scroll to the top$|^go to the top$|^back to the top$|^jump to the top$|^top of the page$|^read (less|earlier)$|^previous (screen| page)$|^scroll a (bit|little)$|^up a (bit|little)$/ },
   { intent: "navigate_url", url: "https://example.com/", re: /^(go |take me )?back to (the )?(home|homepage|start)$|^go home$|^take me home$|^go to (the )?home ?page$|^home page$/ },
   // Number every clickable thing on the page so the user can aim by number instead of by name.
   // The most reliable click available: it does not depend on the model matching words to an element.
@@ -45,10 +45,13 @@ const RULES = [
   { intent: "press_key", key: "Escape", re: /^(press |hit |push |tap )?escape( key)?$|^escape$|^dismiss( this| that| the (dialog|popup|menu))?$|^close (the |this )?(dialog|popup|menu)$|^cancel that$|^get rid of (that|this)$/ },
   { intent: "press_key", key: "Backspace", re: /^(press |hit |push |tap )?back ?space( key)?$|^back ?space$|^delete (the |that )?(last|previous) (character|letter|word)$|^erase (a|one|the last) (character|letter)$/ },
   { intent: "press_key", key: "Delete", re: /^(press |hit |push |tap )?delete( key)?$|^delete (the |that )?(next|following) (character|letter)$/ },
-  { intent: "press_key", key: "ArrowDown", re: /^(press |hit |push |tap )?(down|down arrow|arrow down)( key)?$|^down arrow$/ },
-  { intent: "press_key", key: "ArrowUp", re: /^(press |hit |push |tap )?(up|up arrow|arrow up)( key)?$|^up arrow$/ },
-  { intent: "press_key", key: "ArrowLeft", re: /^(press |hit |push |tap )?(left|left arrow|arrow left)( key)?$|^left arrow$/ },
-  { intent: "press_key", key: "ArrowRight", re: /^(press |hit |push |tap )?(right|right arrow|arrow right)( key)?$|^right arrow$/ },
+  // Bare "up"/"down"/"left"/"right" already scroll, and they match first. The caret keys
+  // therefore require the word "arrow" or an explicit "press" - otherwise these rules would be
+  // dead code shadowed by the scroll rules above.
+  { intent: "press_key", key: "ArrowDown", re: /^(down arrow|arrow down)( key)?$|^(press |hit |push |tap )down( key)?$/ },
+  { intent: "press_key", key: "ArrowUp", re: /^(up arrow|arrow up)( key)?$|^(press |hit |push |tap )up( key)?$/ },
+  { intent: "press_key", key: "ArrowLeft", re: /^(left arrow|arrow left)( key)?$|^(press |hit |push |tap )left( key)?$/ },
+  { intent: "press_key", key: "ArrowRight", re: /^(right arrow|arrow right)( key)?$|^(press |hit |push |tap )right( key)?$/ },
   { intent: "press_key", key: "Home", re: /^(press |hit |push |tap )?home( key)?$|^(go|jump|move) to (the )?(start|beginning)( of the line)?$/ },
   { intent: "press_key", key: "End", re: /^(press |hit |push |tap )?end( key)?$|^(go|jump|move) to (the )?end( of the line)?$/ },
   { intent: "press_key", key: " ", re: /^(space|space ?bar)( key)?$|^type (a )?space$/ },
