@@ -77,11 +77,6 @@
   .headwrap{position:relative;width:100%;max-width:300px;border-radius:6px;overflow:hidden;background:var(--surface);border:1px solid var(--line)}
   #headvideo{width:100%;display:block;transform:scaleX(-1)}
   #headcanvas{position:absolute;inset:0;width:100%;height:100%}
-  #dwellring{position:absolute;right:8px;bottom:8px;width:40px;height:40px;opacity:0;transition:opacity .15s}
-  #dwellring svg{width:100%;height:100%;transform:rotate(-90deg)}
-  #dwellring circle{fill:none;stroke-width:3}
-  #dwellring .bg{stroke:rgba(255,255,255,.2)}
-  #dwellring .fg{stroke:#fff;stroke-linecap:round;stroke-dasharray:113;stroke-dashoffset:calc(113 - 113 * var(--p,0))}
   .settings{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center;margin-top:14px;font-size:12px;color:var(--muted)}
   .settings .full{grid-column:1/-1}
   .settings label{display:flex;align-items:center;gap:6px}
@@ -179,7 +174,6 @@
         <div class="headwrap">
           <video id="headvideo" playsinline muted></video>
           <canvas id="headcanvas" width="320" height="240"></canvas>
-          <div id="dwellring"><svg viewBox="0 0 44 44"><circle class="bg" cx="22" cy="22" r="18"/><circle class="fg" cx="22" cy="22" r="18"/></svg></div>
         </div>
         <div class="row" style="margin-top:12px">
           <button id="headtoggle">Enable eye control</button>
@@ -194,20 +188,17 @@
           </select>
           <label for="headclick">Click</label>
           <select id="headclick">
-            <option value="pinch">Pinch</option>
-            <option value="both">Pinch or dwell</option>
-            <option value="dwell">Dwell</option>
+            <option value="pinch">Pinch (thumb + index)</option>
+            <option value="none">Tracking only</option>
           </select>
           <label for="headsens">Sensitivity</label>
           <div class="ctl"><input type="range" id="headsens" min="0.4" max="2.5" step="0.1" value="1" /><span id="headsensv">1.0</span></div>
-          <label for="headdwell">Dwell time</label>
-          <div class="ctl"><input type="range" id="headdwell" min="400" max="2000" step="50" value="900" /><span id="headdwellv">900ms</span></div>
           <div class="full row">
             <label><input type="checkbox" id="headmirror" checked /> Mirror</label>
             <label><input type="checkbox" id="showvideo" checked /> Show video</label>
           </div>
         </div>
-        <p class="small" style="margin:12px 0 0">Move your eyes to steer the cursor, hold still to click. Risky buttons still need a spoken “confirm”.</p>
+        <p class="small" style="margin:12px 0 0">Move your eyes to steer the cursor, pinch thumb and index finger to click. Risky buttons still need a spoken “confirm”.</p>
       </details>
     </section>
 
@@ -457,9 +448,6 @@ import { HeadTracker } from "/head-tracker.js";
       send({ type: "pointer", x: p.x, y: p.y });
     },
     onActivate: (a) => {
-      const ring = $("dwellring");
-      ring.style.opacity = a.dwelling ? "1" : "0";
-      ring.style.setProperty("--p", String(a.progress || 0));
       if (a.click) send({ type: "pointer", x: a.click.x, y: a.click.y, click: true });
     },
   });
@@ -477,17 +465,16 @@ import { HeadTracker } from "/head-tracker.js";
   };
   $("headclick").onchange = (e) => {
     tracker.update({ clickMode: e.target.value });
-    if (e.target.value !== "dwell") tracker.loadHands();
+    if (e.target.value === "pinch") tracker.loadHands();
   };
   $("headsens").oninput = (e) => {
     $("headsensv").textContent = Number(e.target.value).toFixed(1);
     tracker.update({ sensitivity: Number(e.target.value) });
   };
-  $("headdwell").oninput = (e) => {
-    $("headdwellv").textContent = `${e.target.value}ms`;
-    tracker.update({ dwellMs: Number(e.target.value) });
+  $("headmirror").onchange = (e) => {
+    tracker.update({ mirror: e.target.checked });
+    $("headvideo").style.transform = e.target.checked ? "scaleX(-1)" : "none";
   };
-  $("headmirror").onchange = (e) => tracker.update({ mirror: e.target.checked });
 
   connect();
 })();

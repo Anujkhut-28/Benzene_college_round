@@ -14,11 +14,9 @@ const DEFAULTS = {
   enabled: false,
   mode: "eye",
   sensitivity: 1.0,
-  smoothing: 0.15,
-  dwellMs: 900,
-  margin: 0.1,
-  deadzone: 0.005,
-  dwellMove: 0.04,
+  smoothing: 0.2,
+  margin: 0.05,
+  deadzone: 0.003,
   mirror: true,
   showVideo: true,
   clickMode: "pinch",
@@ -33,10 +31,10 @@ const L_CHEEK = 234;
 const R_CHEEK = 454;
 const TOP = 10;
 
-const EYE_GAIN_X = 8.5;
-const EYE_GAIN_Y = 14.0;
-const HEAD_GAIN_X = 6.0;
-const HEAD_GAIN_Y = 7.0;
+const EYE_GAIN_X = 6.5;
+const EYE_GAIN_Y = 8.5;
+const HEAD_GAIN_X = 5.0;
+const HEAD_GAIN_Y = 6.0;
 
 export class HeadTracker {
   constructor({ video, canvas, onStatus, onPoint, onActivate }) {
@@ -51,11 +49,11 @@ export class HeadTracker {
     this.raf = 0;
     this.point = { x: 0.5, y: 0.5 };
     this.smooth = { x: 0.5, y: 0.5 };
-    this.dwellStart = 0;
-    this.dwellAnchor = { x: 0.5, y: 0.5 };
     this.calibrating = true;
     this.baseline = null;
     this.eyeBase = null;
+    this._lastGaze = null;
+    this._isBlinking = false;
     this.faceSeenSince = 0;
     this.pinched = false;
     this.pinchWasDown = false;
@@ -115,7 +113,7 @@ export class HeadTracker {
     this.running = true;
     this.cfg.enabled = true;
     this.onStatus({ state: "running" });
-    if (this.cfg.clickMode !== "dwell") await this.loadHands();
+    if (this.cfg.clickMode === "pinch") await this.loadHands();
     this.loop();
     return { ok: true };
   }
@@ -190,6 +188,8 @@ export class HeadTracker {
     this.calibrating = true;
     this.baseline = null;
     this.eyeBase = null;
+    this._lastGaze = null;
+    this._isBlinking = false;
     this.smooth = { x: 0.5, y: 0.5 };
     this.point = { x: 0.5, y: 0.5 };
   }
@@ -220,18 +220,23 @@ export class HeadTracker {
 
     const p = this.compute(marks);
     if (!p) return;
-    this.smooth.x += (p.x - this.smooth.x) * (1 - this.cfg.smoothing);
-    this.smooth.y += (p.y - this.smooth.y) * (1 - this.cfg.smoothing);
+
+    // Adaptive smoothing: filter micro-tremors while remaining responsive to rapid gaze shifts
+    const dist = Math.hypot(p.x - this.smooth.x, p.y - this.smooth.y);
+    const baseAlpha = Math.max(0.08, Math.min(0.5, 1 - this.cfg.smoothing));
+    const dynamicAlpha = Math.min(0.65, baseAlpha + Math.min(dist * 2.5, 0.35));
+
+    this.smooth.x += (p.x - this.smooth.x) * dynamicAlpha;
+    this.smooth.y += (p.y - this.smooth.y) * dynamicAlpha;
     this.point = { x: this.smooth.x, y: this.smooth.y };
     this.draw(marks);
     this.onPoint(this.point);
 
-    const pinch = this.cfg.clickMode !== "dwell" && this.handLandmarker ? this.detectPinch(v) : false;
-    if (this.cfg.clickMode !== "dwell") {
-      if (pinch && !this.pinchWasDown) this.onActivate({ dwelling: false, progress: 0, click: { ...this.point }, pinch: true });
-      this.pinchWasDown = pinch;
+    const pinch = this.cfg.clickMode === "pinch" && this.handLandmarker ? this.detectPinch(v) : false;
+    if (pinch && !this.pinchWasDown) {
+      this.onActivate({ click: { ...this.point }, pinch: true });
     }
-    if (this.cfg.clickMode !== "pinch") this.tickDwell();
+    this.pinchWasDown = pinch;
     this.onStatus({ state: "running", face: true, calibrating: this.calibrating, pinching: pinch });
   }
 
@@ -266,21 +271,21 @@ export class HeadTracker {
 
     if (this.calibrating) {
       this.baseline = { yaw, pitch };
-      if (gaze) {
-        const left = irisOffset(marks, L_IRIS, 33, 133, 159, 145);
-        const right = irisOffset(marks, R_IRIS, 362, 263, 386, 374);
-        if (left && right) this.eyeBase = { x: (left.x + right.x) / 2, y: (left.y + right.y) / 2 };
+      if (!this._isBlinking) {
+        this.calibrating = false;
       }
-      this.calibrating = false;
       return { x: 0.5, y: 0.5 };
     }
 
     let rawX;
     let rawY;
     if (gaze && this.cfg.mode === "eye") {
-      rawX = gaze.x;
-      rawY = gaze.y;
-    } else if (gaze) {
+      // Natural gaze: eye direction + head pose orientation
+      const headX = this.centered(yaw, "yaw");
+      const headY = this.centered(pitch, "pitch");
+      rawX = gaze.x + (headX - 0.5) * 0.4;
+      rawY = gaze.y + (headY - 0.5) * 0.4;
+    } else if (gaze && this.cfg.mode === "blend") {
       rawX = (gaze.x + this.centered(yaw, "yaw")) / 2;
       rawY = (gaze.y + this.centered(pitch, "pitch")) / 2;
     } else {
@@ -315,46 +320,40 @@ export class HeadTracker {
     if (!marks || marks.length < 478) return null;
     const left = irisOffset(marks, L_IRIS, 33, 133, 159, 145);
     const right = irisOffset(marks, R_IRIS, 362, 263, 386, 374);
-    if (!left || !right) return null;
+    if (!left && !right) return null;
 
-    const rawX = (left.x + right.x) / 2;
-    const rawY = (left.y + right.y) / 2;
+    const bothBlinking = Boolean(left?.blinking && right?.blinking);
+    this._isBlinking = bothBlinking;
+
+    // During a blink, hold the previous gaze to avoid jumping to extremes
+    if (bothBlinking) {
+      return this._lastGaze || null;
+    }
+
+    let rawX, rawY;
+    if (left && right && !left.blinking && !right.blinking) {
+      rawX = (left.x + right.x) / 2;
+      rawY = (left.y + right.y) / 2;
+    } else if (left && !left.blinking) {
+      rawX = left.x;
+      rawY = left.y;
+    } else if (right && !right.blinking) {
+      rawX = right.x;
+      rawY = right.y;
+    } else {
+      return this._lastGaze || null;
+    }
 
     if (!this.eyeBase) {
       this.eyeBase = { x: rawX, y: rawY };
     }
-    return {
+
+    const gaze = {
       x: 0.5 + (rawX - this.eyeBase.x) * EYE_GAIN_X,
       y: 0.5 + (rawY - this.eyeBase.y) * EYE_GAIN_Y,
     };
-  }
-
-  tickDwell() {
-    if (!this.cfg.enabled) return;
-    const now = performance.now();
-
-    if (this.dwellStart) {
-      const dx = Math.abs(this.point.x - this.dwellAnchor.x);
-      const dy = Math.abs(this.point.y - this.dwellAnchor.y);
-      if (Math.hypot(dx, dy) > this.cfg.dwellMove) {
-        this.dwellStart = 0;
-        this.onActivate({ dwelling: false, progress: 0 });
-      }
-    }
-
-    if (!this.dwellStart) {
-      this.dwellStart = now;
-      this.dwellAnchor = { ...this.point };
-      this.onActivate({ dwelling: true, progress: 0 });
-      return;
-    }
-    const held = now - this.dwellStart;
-    if (held >= this.cfg.dwellMs) {
-      this.dwellStart = 0;
-      this.onActivate({ dwelling: false, progress: 0, click: { ...this.point } });
-      return;
-    }
-    this.onActivate({ dwelling: true, progress: held / this.cfg.dwellMs });
+    this._lastGaze = gaze;
+    return gaze;
   }
 
   draw(marks) {
@@ -393,15 +392,15 @@ function clamp01(v) {
 }
 
 /**
- * Iris centre relative to one eye, normalised by that eye's own width and height so the
- * result is independent of face size and distance. Horizontal is the solid signal; vertical is
- * much weaker (the eye barely moves up/down), so the caller amplifies it separately.
- * Returns null if any landmark is missing.
+ * Iris centre relative to eye corners, normalized by eye width so the result is
+ * independent of face size, distance, and head roll.
+ * Includes blink/eyelid closure detection to prevent vertical gaze exploding during blinks.
  */
 function irisOffset(marks, irisIdx, cornerA, cornerB, lidTop, lidBottom) {
   const a = marks[cornerA];
   const b = marks[cornerB];
   if (!a || !b) return null;
+
   let sx = 0;
   let sy = 0;
   let n = 0;
@@ -413,18 +412,36 @@ function irisOffset(marks, irisIdx, cornerA, cornerB, lidTop, lidBottom) {
     n++;
   }
   if (!n) return null;
-  const w = b.x - a.x;
-  if (Math.abs(w) < 1e-4) return null;
+  const irisX = sx / n;
+  const irisY = sy / n;
 
-  // Vertical span from the eyelids; fall back to the corner midpoint when unavailable.
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const eyeWidth = Math.hypot(dx, dy);
+  if (eyeWidth < 1e-4) return null;
+
+  // Blink detection: distance between eyelids relative to eye width
   const top = marks[lidTop];
   const bottom = marks[lidBottom];
+  let isBlinking = false;
+  if (top && bottom) {
+    const lidDist = Math.hypot(top.x - bottom.x, top.y - bottom.y);
+    if (lidDist / eyeWidth < 0.12) {
+      isBlinking = true;
+    }
+  }
+
+  // Normalized horizontal position along cornerA -> cornerB axis
+  const normX = ((irisX - a.x) * dx + (irisY - a.y) * dy) / (eyeWidth * eyeWidth);
+
+  // Vertical position: measure iris Y relative to stable canthi midpoint
+  // Normalizing by eyeWidth avoids dividing by eyelid distance which fluctuates wildly during blinks
   const midY = (a.y + b.y) / 2;
-  const yTop = top ? top.y : midY - 0.01;
-  const yBottom = bottom ? bottom.y : midY + 0.01;
-  const h = Math.abs(yBottom - yTop);
+  const normY = 0.5 + ((irisY - midY) / eyeWidth) * 2.5;
+
   return {
-    x: (sx / n - a.x) / w,
-    y: h > 1e-4 ? (sy / n - yTop) / (yBottom - yTop) : 0.5,
+    x: normX,
+    y: normY,
+    blinking: isBlinking,
   };
 }
