@@ -122,6 +122,15 @@
   .log{font-family:var(--mono);font-size:12px;color:var(--muted)}
   .log div{padding:2px 0;white-space:pre-wrap;word-break:break-word}
   .log .act{color:var(--green)} .log .error{color:var(--red)} .log .warn{color:var(--amber)} .log .debug{color:var(--dim)}
+  .metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}
+  .metric{border-top:1px solid var(--line);padding-top:7px;min-width:0}
+  .metric b{display:block;font-family:var(--mono);font-size:15px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .metric span{display:block;font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  textarea{width:100%;min-height:54px;resize:vertical;font:inherit;background:var(--bg);border:1px solid var(--line2);color:var(--text);border-radius:6px;padding:7px 10px}
+  .minirow{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .evalruns{font-size:12px;color:var(--muted);max-height:130px;overflow:auto}
+  .evalruns div{display:grid;grid-template-columns:1fr auto;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)}
+  .evalruns div:last-child{border-bottom:0}
 
   @media (max-width:1100px){
     html,body{height:auto}
@@ -256,6 +265,42 @@
         <dt>Search box</dt><dd id="sbox" class="mono">–</dd>
       </dl>
     </section>
+    <section>
+      <h2>Evaluation <span class="r" id="evalstate">idle</span></h2>
+      <div class="row">
+        <select id="evaltask"></select>
+        <select id="evalmethod">
+          <option value="handsfree">Handsfree</option>
+          <option value="mouse_keyboard">Mouse + keyboard</option>
+        </select>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="primary" id="evalstart">Start</button>
+        <button id="evalsuccess">Finish pass</button>
+        <button id="evalfail">Finish fail</button>
+        <button id="evalclear">Clear</button>
+      </div>
+      <div class="metrics">
+        <div class="metric"><b id="evaltime">--</b><span>task time</span></div>
+        <div class="metric"><b id="evalcmdacc">manual</b><span>command accuracy</span></div>
+        <div class="metric"><b id="evalselerr">0</b><span>selection errors</span></div>
+        <div class="metric"><b id="evalaccact">0</b><span>accidental activations</span></div>
+        <div class="metric"><b id="evaldictacc">manual</b><span>dictation accuracy</span></div>
+        <div class="metric"><b id="evalruns">0</b><span>saved runs</span></div>
+      </div>
+      <div class="row">
+        <button id="evalcorrect">Command ok</button>
+        <button id="evalwrong">Command wrong</button>
+        <button id="evalsel">Selection error</button>
+        <button id="evalacc">Accidental action</button>
+      </div>
+      <div class="minirow" style="margin-top:8px">
+        <textarea id="evalexpected" placeholder="Expected dictation"></textarea>
+        <textarea id="evalactual" placeholder="Actual dictation"></textarea>
+      </div>
+      <textarea id="evalnotes" style="margin-top:8px" placeholder="Notes"></textarea>
+      <div class="evalruns" id="evalhistory"></div>
+    </section>
     <section class="grow">
       <h2>Elements sent to model <span class="r" id="elcount"></span></h2>
       <div class="scroll" id="elements"></div>
@@ -271,6 +316,7 @@ import { HeadTracker } from "/head-tracker.js";
   const fmt = (x, d = 2) => (x == null ? "–" : Number(x).toFixed(d));
   let ws;
   let ui = null;
+  let evalUi = null;
   let hotIds = new Set();
   let candIds = new Set();
 
@@ -293,6 +339,7 @@ import { HeadTracker } from "/head-tracker.js";
         case "tabs": $("tabs").textContent = `${payload.length} tab${payload.length === 1 ? "" : "s"}`; break;
         case "mic": payload.on ? startMic() : stopMic(); break;
         case "say": say(payload.text, payload.priority); break;
+        case "evaluation": evalUi = payload; renderEvaluation(); break;
       }
     };
   }
@@ -330,6 +377,65 @@ import { HeadTracker } from "/head-tracker.js";
     (ui.log || []).forEach(appendLog);
     if (ui.lastDecision) renderDecision(ui.lastDecision);
     if (ui.pending) $("pending").textContent = `Pending: ${ui.pending.summary} — say "confirm" or "cancel"`;
+  }
+  const ms = (x) => x == null ? "--" : x < 1000 ? `${x} ms` : `${(x / 1000).toFixed(1)} s`;
+  const pct = (x) => x == null ? "manual" : `${Number(x).toFixed(1)}%`;
+  function renderEvaluation() {
+    if (!evalUi) return;
+    const taskSel = $("evaltask");
+    if (taskSel && taskSel.options.length === 0) {
+      for (const t of evalUi.tasks || []) {
+        const opt = document.createElement("option");
+        opt.value = t.id;
+        opt.textContent = t.title;
+        taskSel.appendChild(opt);
+      }
+    }
+    const active = evalUi.active;
+    $("evalstate").textContent = active ? `running: ${active.inputMethod}` : "idle";
+    const stats = active ? activeEvalStats(active) : ((evalUi.runs || [])[evalUi.runs.length - 1]?.stats || {});
+    $("evaltime").textContent = ms(stats.durationMs);
+    $("evalcmdacc").textContent = pct(stats.commandAccuracy);
+    $("evalselerr").textContent = stats.selectionErrors ?? 0;
+    $("evalaccact").textContent = stats.accidentalActivations ?? 0;
+    $("evaldictacc").textContent = pct(stats.dictationAccuracy);
+    $("evalruns").textContent = evalUi.summary?.finishedCount ?? 0;
+    $("evalstart").disabled = Boolean(active);
+    $("evalsuccess").disabled = !active;
+    $("evalfail").disabled = !active;
+    for (const id of ["evalcorrect", "evalwrong", "evalsel", "evalacc"]) $(id).disabled = !active;
+    $("evalexpected").disabled = false;
+    for (const id of ["evalactual", "evalnotes"]) $(id).disabled = !active;
+    if (active) {
+      $("evalexpected").value = active.manual?.dictationExpected || "";
+      $("evalactual").value = active.manual?.dictationActual || "";
+      $("evalnotes").value = active.manual?.notes || "";
+    }
+    const rows = (evalUi.summary?.byMethod || []).map((m) =>
+      `<div><span>${esc(m.inputMethod)} - ${m.runs} run${m.runs === 1 ? "" : "s"} - ${ms(m.avgTaskCompletionMs)} - cmd ${pct(m.avgCommandAccuracy)} - exec ${pct(m.avgExecutionSuccessRate)}</span><span>${m.totalSelectionErrors}/${m.totalAccidentalActivations}</span></div>`);
+    $("evalhistory").innerHTML = rows.join("") || `<div><span>No finished runs</span><span></span></div>`;
+  }
+  function activeEvalStats(run) {
+    const total = (run.manual?.commandCorrect || 0) + (run.manual?.commandIncorrect || 0);
+    return {
+      durationMs: Date.now() - run.startedAt,
+      commandAccuracy: total ? (run.manual.commandCorrect / total) * 100 : null,
+      selectionErrors: run.manual?.selectionErrors || 0,
+      accidentalActivations: run.manual?.accidentalActivations || 0,
+      dictationAccuracy: dictAccuracy(run.manual?.dictationExpected, run.manual?.dictationActual),
+    };
+  }
+  function dictAccuracy(expected, actual) {
+    expected = String(expected || "").trim().toLowerCase();
+    actual = String(actual || "").trim().toLowerCase();
+    if (!expected) return null;
+    const a = Array.from(expected), b = Array.from(actual);
+    const dp = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) dp[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    return Math.max(0, (1 - dp[a.length][b.length] / a.length) * 100);
   }
   function renderStats() {
     const s = ui.stats;
@@ -438,6 +544,18 @@ import { HeadTracker } from "/head-tracker.js";
     }
   };
 
+  $("evalstart").onclick = () => send({ type: "evaluation_start", payload: { taskId: $("evaltask").value, inputMethod: $("evalmethod").value, expectedText: $("evalexpected").value } });
+  $("evalsuccess").onclick = () => send({ type: "evaluation_finish", payload: { success: true, notes: $("evalnotes").value } });
+  $("evalfail").onclick = () => send({ type: "evaluation_finish", payload: { success: false, notes: $("evalnotes").value } });
+  $("evalclear").onclick = () => send({ type: "evaluation_clear" });
+  $("evalcorrect").onclick = () => send({ type: "evaluation_mark", payload: { command: "correct" } });
+  $("evalwrong").onclick = () => send({ type: "evaluation_mark", payload: { command: "incorrect" } });
+  $("evalsel").onclick = () => send({ type: "evaluation_mark", payload: { selectionError: true } });
+  $("evalacc").onclick = () => send({ type: "evaluation_mark", payload: { accidentalActivation: true } });
+  $("evalexpected").onchange = () => send({ type: "evaluation_mark", payload: { dictationExpected: $("evalexpected").value } });
+  $("evalactual").onchange = () => send({ type: "evaluation_mark", payload: { dictationActual: $("evalactual").value } });
+  $("evalnotes").onchange = () => send({ type: "evaluation_mark", payload: { notes: $("evalnotes").value } });
+
   // ------------------------------------------------------------ speech
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let rec = null, micOn = false, utteranceBase = 0;
@@ -516,6 +634,7 @@ import { HeadTracker } from "/head-tracker.js";
   };
 
   connect();
+  setInterval(() => { if (evalUi?.active) renderEvaluation(); }, 1000);
 })();
 </script>
 </body>

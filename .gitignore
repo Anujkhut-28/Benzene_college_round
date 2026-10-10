@@ -14,3 +14,4 @@ dist/
 installer/runtime/
 .probe-profile/
 AGENTS.md
+.handsfree-evaluation.json

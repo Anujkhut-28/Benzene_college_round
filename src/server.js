@@ -10,6 +10,7 @@ import express from "express";
 import { WebSocketServer } from "ws";
 import { BrowserManager } from "./browser.js";
 import { Controller } from "./controller.js";
+import { EvaluationStore } from "./evaluation.js";
 import { hasApiKey, BACKEND } from "./jev.js";
 import { MODEL, QUESTIONS, T } from "./constants.js";
 
@@ -90,11 +91,15 @@ export async function startServer(opts = {}) {
 
   const controller = new Controller({ browser });
   await controller.start();
+  const evaluation = new EvaluationStore();
+  await evaluation.load();
 
   const app = express();
+  app.use(express.json({ limit: "64kb" }));
   app.use(express.static(path.join(__dirname, "public")));
   app.get("/api/state", (_req, res) => res.json(controller.uiState()));
   app.get("/api/questions", (_req, res) => res.json({ model: MODEL, thresholds: T, questions: QUESTIONS }));
+  app.get("/api/evaluation", (_req, res) => res.json(evaluation.snapshot()));
   app.get("/api/browser", (_req, res) =>
     res.json({ connected: browser.isConnected(), hasPages: browser.hasPages(), tabs: browser.tabInfo() }),
   );
@@ -121,8 +126,14 @@ export async function startServer(opts = {}) {
   };
 
   controller.on("transcript", (p) => broadcast("transcript", p));
-  controller.on("decision", (p) => broadcast("decision", p));
-  controller.on("action", (p) => broadcast("action", { ...p, ui: controller.uiState() }));
+  controller.on("decision", (p) => {
+    evaluation.recordDecision(p).then((s) => broadcast("evaluation", s)).catch(() => {});
+    broadcast("decision", p);
+  });
+  controller.on("action", (p) => {
+    evaluation.recordAction(p).then((s) => broadcast("evaluation", s)).catch(() => {});
+    broadcast("action", { ...p, ui: controller.uiState() });
+  });
   controller.on("snapshot", () => broadcast("snapshot", controller.uiState().snapshot));
   controller.on("log", (p) => broadcast("log", p));
   controller.on("candidates", (p) => broadcast("candidates", p));
@@ -135,6 +146,7 @@ export async function startServer(opts = {}) {
 
   wss.on("connection", (ws) => {
     ws.send(JSON.stringify({ type: "hello", payload: controller.uiState() }));
+    ws.send(JSON.stringify({ type: "evaluation", payload: evaluation.snapshot() }));
     ws.on("message", async (raw) => {
       let msg;
       try {
@@ -167,6 +179,7 @@ export async function startServer(opts = {}) {
           break;
         case "pointer":
           await browser.pointer(msg).catch(() => {});
+          if (msg.click) evaluation.recordActivation({ source: "pointer-click", x: msg.x, y: msg.y }).then((s) => broadcast("evaluation", s)).catch(() => {});
           // A pinch click can navigate; refresh so voice commands see the new page.
           if (msg.click) setTimeout(() => controller.refreshSnapshot().catch(() => {}), 700);
           break;
@@ -180,6 +193,19 @@ export async function startServer(opts = {}) {
         }
         case "state":
           ws.send(JSON.stringify({ type: "hello", payload: controller.uiState() }));
+          ws.send(JSON.stringify({ type: "evaluation", payload: evaluation.snapshot() }));
+          break;
+        case "evaluation_start":
+          broadcast("evaluation", await evaluation.start(msg.payload || {}));
+          break;
+        case "evaluation_finish":
+          broadcast("evaluation", await evaluation.finish(msg.payload || {}));
+          break;
+        case "evaluation_mark":
+          broadcast("evaluation", await evaluation.mark(msg.payload || {}));
+          break;
+        case "evaluation_clear":
+          broadcast("evaluation", await evaluation.clear());
           break;
         default:
           break;

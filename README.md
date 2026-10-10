@@ -249,6 +249,32 @@ Common commands are recognised by a rule-based fast path in microseconds. Anythi
 recognise goes to the decision model, which reads intent, target, site and completeness in a single
 pass and returns calibrated probabilities.
 
+## Performance Evaluation
+
+The control page includes an **Evaluation** panel for comparing HandsFree with conventional
+mouse-and-keyboard input on repeatable tasks. Pick a task, choose the input method, press **Start**,
+perform the task, then press **Finish pass** or **Finish fail**. Results are stored locally in
+`.handsfree-evaluation.json`, which is ignored by git.
+
+Automatically measured:
+
+- Task completion time, from **Start** to **Finish**.
+- Command/action attempts observed during the run.
+- Execution success rate from actions that the browser reports as succeeded or failed.
+- Pointer click activations from head/hand tracking messages.
+
+Manual markings:
+
+- Command accuracy: press **Command ok** or **Command wrong** while reviewing a run.
+- Selection errors: press **Selection error** when the wrong element was selected.
+- Accidental activations: press **Accidental action** when an unintended click/action happened.
+- Dictation accuracy: enter expected and actual dictated text; the UI calculates edit-distance
+  similarity when both are present.
+
+The dashboard does not claim improvements on its own. It only summarizes the data you record,
+grouped by input method, so you can compare HandsFree runs with mouse-and-keyboard runs under the
+same tasks.
+
 ## Architecture
 
 ```
