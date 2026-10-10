@@ -61,6 +61,26 @@ export const T = {
 
 export const TARGET_INTENTS = new Set(["click_element", "type_into_field", "select_option"]);
 
+// Text that means "this click spends money or does something you cannot undo".
+// The rule fast path answers "click ..." without asking the model about destructiveness, so
+// answers.destructive is a hardcoded 0.1 there and cannot be trusted. These patterns are
+// checked against the target element's own text instead - see isDestructiveElement().
+export const DESTRUCTIVE_TEXT_STRONG =
+  /(buy now|place order|place your order|checkout|check out|submit|send message|delete|remove|confirm purchase|unsubscribe|cancel subscription)/;
+// Weaker verbs only count on things that behave like buttons; "post" in a forum post body
+// and "send" in a chat are fine, "Post comment" and "Send message" buttons are not.
+export const DESTRUCTIVE_TEXT_WEAK = /\b(buy|purchase|pay|order|place|send|post|delete|remove|confirm|subscribe|sign ?up|log ?in|transfer|donate)\b/;
+export const DESTRUCTIVE_ROLES = new Set(["button", "link", "submit", "menuitem"]);
+
+/** Risky-click test over a snapshot element (or anything with text/role). */
+export function isDestructiveElement(el) {
+  if (!el) return false;
+  const text = `${el.text || ""} ${el.ariaLabel || ""} ${el.value || ""} ${el.href || ""}`.toLowerCase();
+  if (!text.trim()) return false;
+  if (DESTRUCTIVE_TEXT_STRONG.test(text)) return true;
+  return DESTRUCTIVE_ROLES.has(el.role) && DESTRUCTIVE_TEXT_WEAK.test(text);
+}
+
 // ---------------------------------------------------------------------------
 // Sites (code owns URLs; Jev only picks the name)
 // ---------------------------------------------------------------------------

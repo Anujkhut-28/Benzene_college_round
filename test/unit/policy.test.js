@@ -200,6 +200,40 @@ test("destructive flag does not block navigation or scrolling", () => {
   assert.equal(evaluatePolicy({ answers: a, candidates, snapshot }).decision, "act");
 });
 
+// Regression: the rule fast path (src/rules.js) answers "click ..." without asking the model
+// about destructiveness and hardcodes destructive to 0.1, so voice clicks used to sail straight
+// past the confirmation gate. Pinch clicks went through browser.clickElement() and were guarded;
+// voice clicks went through the executor and were not. The target's own text is now checked too.
+test("voice clicks on risky button text still require confirmation when the model is not asked", () => {
+  const shop = {
+    ...snapshot,
+    elements: [
+      { id: "p01", role: "button", text: "Place order" },
+      { id: "p02", role: "button", text: "Checkout" },
+      { id: "p03", role: "link", text: "Send message" },
+      { id: "p04", role: "button", text: "Delete account" },
+      { id: "p05", role: "link", text: "Continue reading" },
+      { id: "p06", role: "button", text: "Search" },
+    ],
+  };
+  const ruleAnswers = (id) => answers({ intent: ch("click_element", 0.95), target: ch(id, 0.95), destructive: { noul: 0.1 } });
+
+  for (const id of ["p01", "p02", "p03", "p04"]) {
+    const r = evaluatePolicy({ answers: ruleAnswers(id), candidates, snapshot: shop });
+    assert.equal(r.decision, "confirm", `${shop.elements.find((e) => e.id === id).text} must ask to confirm`);
+    assert.equal(r.action.targetId, id);
+  }
+  // Ordinary controls must stay one command away.
+  for (const id of ["p05", "p06"]) {
+    assert.equal(evaluatePolicy({ answers: ruleAnswers(id), candidates, snapshot: shop }).decision, "act");
+  }
+  // ...and the confirmation still resolves the pending click.
+  const risky = evaluatePolicy({ answers: ruleAnswers("p01"), candidates, snapshot: shop });
+  const yes = evaluatePolicy({ answers: answers({ intent: ch("confirm", 0.9) }), candidates, snapshot: shop, pending: risky.action });
+  assert.equal(yes.decision, "act");
+  assert.equal(yes.action.confirmed, true);
+});
+
 test("scroll amount maps score levels to little / page / end", () => {
   const mk = (score) => answers({ scroll_amount: { score, confidence: 0.9, probabilities: {} } });
   assert.equal(evaluatePolicy({ answers: mk(0.2), candidates, snapshot }).action.amount, "little");

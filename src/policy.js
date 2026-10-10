@@ -12,6 +12,7 @@ import {
   SILENCE_COMPLETE_MS,
   PAYLOAD_SILENCE_MS,
   PAYLOAD_INTENTS,
+  isDestructiveElement,
 } from "./constants.js";
 import { toHttpUrl, extractPathCandidates } from "./spans.js";
 
@@ -180,6 +181,18 @@ export function evaluatePolicy({ answers, candidates, snapshot, silentMs = 0, is
     if (!safe) {
       return { decision: "confirm", action, reasons, summary: `say "confirm" to ${describe(action)}` };
     }
+    // The rule fast path (src/rules.js) answers "click ..." without asking the model whether
+    // the action is destructive, so `destructive` is a hardcoded 0.1 there and always reads
+    // "safe". Voice clicks therefore bypassed the confirmation entirely while pinch clicks,
+    // which go through browser.clickElement(), were still guarded. Check the target element's
+    // own text as well, so "click place order" asks for a spoken "confirm" on both paths.
+    if (action.type === "click_element" && !action.confirmed) {
+      const targetEl = (snapshot?.elements ?? []).find((e) => e.id === action.targetId);
+      if (isDestructiveElement(targetEl)) {
+        check(reasons, "destructive_text", action.label || action.targetId, "-", false, "risky button text needs confirmation");
+        return { decision: "confirm", action, reasons, summary: `say "confirm" to ${describe(action)}` };
+      }
+    }
   }
 
   return { decision: "act", action, reasons, summary: describe(action) };
@@ -272,8 +285,9 @@ function buildAction({ intentName, answers, candidates, snapshot, reasons, exclu
       }
 
       if (targetOk) {
-        check(reasons, "target", `${chosen} (${r2(target.confidence)})`, T.targetConfidence, true, elementLabel(elements, chosen));
-        return { decision: "act", action: { type: intentName, targetId: chosen, text, label: elementLabel(elements, chosen) } };
+        const label = elementLabel(elements, chosen);
+        check(reasons, "target", `${chosen} (${r2(target.confidence)})`, T.targetConfidence, true, label);
+        return { decision: "act", action: { type: intentName, targetId: chosen, text, label } };
       }
 
       // Typing with no confident target: fall back to the page's search box.
