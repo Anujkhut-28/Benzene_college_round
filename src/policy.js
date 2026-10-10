@@ -274,6 +274,20 @@ function buildAction({ intentName, answers, candidates, snapshot, reasons, exclu
     case "start_listening":
       return { decision: "act", action: { type: "set_mic", on: true, label: "listening again" } };
 
+    case "press_key": {
+      // The key itself comes from the rule table, never from the model.
+      const key = answers.press_key?.key;
+      if (!key) return { decision: "wait", reasons, summary: "which key?" };
+      return { decision: "act", action: { type: "press_key", key, label: `press ${key}` } };
+    }
+
+    case "clear_field": {
+      const focused = snapshot?.focusedFieldId;
+      const id = focused || snapshot?.searchBoxId;
+      if (!id) return { decision: "wait", reasons, summary: "nothing to clear — click a box first" };
+      return { decision: "act", action: { type: "type_into_field", targetId: id, text: "", submit: false, label: elementLabel(snapshot?.elements ?? [], id) } };
+    }
+
     case "click_element":
     case "select_option":
     case "type_into_field": {

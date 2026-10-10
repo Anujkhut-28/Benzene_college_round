@@ -116,13 +116,44 @@ export async function execute(action, browser) {
       await browser.overlay("toast", label);
       const loc = locatorFor(page, action.targetId);
       await loc.click({ timeout: 4000 }).catch(() => loc.focus());
-      await loc.fill("").catch(() => {});
-      await loc.pressSequentially(action.text, { delay: 18 }).catch(async () => loc.fill(action.text));
+      // `append` is dictation: keep what is already in the box and add to it. Everything else
+      // replaces the contents, which is what "type X into the search box" has always meant.
+      if (!action.append) await loc.fill("").catch(() => {});
+      if (action.text) {
+        await loc.pressSequentially(action.text, { delay: 18 }).catch(async () => loc.fill(action.text));
+      }
       if (action.submit) {
         await page.keyboard.press("Enter");
         await settle(page);
       }
       return { ok: true, detail: page.url() };
+    }
+
+    case "press_key": {
+      await browser.overlay("toast", label);
+      // Escape/Tab/arrows move focus and often change the page; the rest do not need to settle.
+      const navigating = ["Enter", "Tab", "Escape"].includes(action.key);
+      // "Control+a" etc. reach the browser as real chords, which is what clipboard actions need.
+      const parts = String(action.key).split("+");
+      const chord = parts.length > 1;
+      if (chord) {
+        for (let i = 0; i < parts.length - 1; i++) await page.keyboard.down(parts[i]);
+        await page.keyboard.press(parts[parts.length - 1]);
+        for (let i = parts.length - 2; i >= 0; i--) await page.keyboard.up(parts[i]);
+      } else {
+        await page.keyboard.press(action.key);
+      }
+      if (navigating) await settle(page);
+      return { ok: true, detail: page.url() };
+    }
+
+    // Dictation: type wherever the caret already is, with no target to name. This is what makes
+    // filling in a long form bearable - you say the words instead of "type ... into the box".
+    case "type_into_focus": {
+      await browser.overlay("toast", label);
+      const typed = await page.keyboard.type(action.text, { delay: 18 }).then(() => true).catch(() => false);
+      if (!typed) return { ok: false, detail: "no focused field" };
+      return { ok: true, detail: `typed into the focused field` };
     }
 
     case "select_option": {

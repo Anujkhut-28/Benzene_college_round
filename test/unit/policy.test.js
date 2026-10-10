@@ -200,6 +200,36 @@ test("destructive flag does not block navigation or scrolling", () => {
   assert.equal(evaluatePolicy({ answers: a, candidates, snapshot }).decision, "act");
 });
 
+test("keyboard commands become key actions, and clear targets the focused field", () => {
+  const key = (k) => {
+    const r = evaluatePolicy({ answers: answers({ intent: ch("press_key", 0.95), press_key: { key: k } }), candidates, snapshot });
+    assert.equal(r.decision, "act", `${k} should act`);
+    assert.equal(r.action.type, "press_key");
+    assert.equal(r.action.key, k);
+  };
+  for (const k of ["Tab", "Escape", "Backspace", "Delete", "ArrowDown", "Control+a", "Control+v"]) key(k);
+
+  // A key must survive the destructive gate untouched.
+  const enter = evaluatePolicy({
+    answers: answers({ intent: ch("press_key", 0.95), press_key: { key: "Enter" }, destructive: { noul: 0.95 } }),
+    candidates, snapshot,
+  });
+  assert.equal(enter.action.key, "Enter");
+
+  // clear_field uses the caret when there is one, and waits when there is not.
+  const withFocus = evaluatePolicy({
+    answers: answers({ intent: ch("clear_field", 0.95) }),
+    candidates,
+    snapshot: { ...snapshot, focusedFieldId: "e09", searchBoxId: "e01" },
+  });
+  assert.equal(withFocus.decision, "act");
+  assert.equal(withFocus.action.type, "type_into_field");
+  assert.equal(withFocus.action.text, "");
+
+  const noField = evaluatePolicy({ answers: answers({ intent: ch("clear_field", 0.95) }), candidates, snapshot: { ...snapshot, focusedFieldId: null, searchBoxId: null } });
+  assert.equal(noField.decision, "wait");
+});
+
 // Regression: the rule fast path (src/rules.js) answers "click ..." without asking the model
 // about destructiveness and hardcodes destructive to 0.1, so voice clicks used to sail straight
 // past the confirmation gate. Pinch clicks went through browser.clickElement() and were guarded;

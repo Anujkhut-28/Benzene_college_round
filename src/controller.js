@@ -20,6 +20,7 @@ import { MODEL_LABEL } from "./local-jev.js";
 import { evaluatePolicy, describe } from "./policy.js";
 import { execute } from "./executor.js";
 import { parseCandidatePick, cleanTranscript } from "./spans.js";
+import { recognize } from "./rules.js";
 import { approxTokens } from "./snapshot.js";
 
 const avg = (xs) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
@@ -39,6 +40,8 @@ export class Controller extends EventEmitter {
     this.utterance = null; // { id, physicalId, prefix, gen, text, final, startedAt, updatedAt, actedOn, actedText }
     this.consumed = null; // { id: physical utterance id, prefix: executed text (lowercase), gen }
     this.pending = null; // destructive action awaiting "confirm"
+    // Dictation: once the user is in a field, unrecognised words are typed rather than ignored.
+    this.dictation = false;
     this.candidates = null; // { list: [{n,id,label}], intent: {type,text}, at }
     this.lastDecision = null;
     this.debounceTimer = null;
@@ -174,6 +177,23 @@ export class Controller extends EventEmitter {
       this.silenceTimer = setTimeout(() => this.decideNow("after-action"), 150);
       return;
     }
+    // Dictation. With a field focused, words that are not a command are simply text to type.
+    // Checked before the model so it costs nothing, and only for words the rule table does not
+    // recognise — a real command always wins over being typed into a box.
+    if (this.dictation && this.snapshot?.focusedFieldId) {
+      const ruled = recognize(utt.text, { site: this.snapshot.site });
+      const isCommand = ruled && ruled.intent?.choice && ruled.intent.choice !== "none";
+      if (!isCommand) {
+        const text = utt.text.trim();
+        if (text) {
+          this._consume(utt, text);
+          this._log("act", `dictated "${text}" into the focused field`);
+          await this._runAction({ type: "type_into_focus", text, label: `typed "${text}"` }, { via: "dictation" });
+        }
+        return;
+      }
+    }
+
     // Allow up to MAX_INFLIGHT overlapping requests (a request for the previous partial may
     // still be useful — if the words already commit to an action we act on it). Anything older
     // is stale and gets cancelled via AbortSignal.
@@ -343,6 +363,30 @@ export class Controller extends EventEmitter {
     }, waitFor);
   }
 
+  /**
+   * Dictation follows the caret. Clicking a text field or typing into one turns it on; Tab and
+   * Escape leave it on, because filling in a form means dictating, tabbing, dictating again.
+   * Anything that navigates away, or a microphone command, turns it off.
+   */
+  _updateDictation(action) {
+    const type = action?.type;
+    if (type === "navigate_url" || type === "go_back" || type === "set_mic" || type === "press_enter") {
+      this.dictation = false;
+      return;
+    }
+    if (type === "press_key") {
+      if (["Tab", "Escape"].includes(action.key)) return; // caret moves, mode stays
+      this.dictation = false;
+      return;
+    }
+    if (type === "click_element" || type === "type_into_field") {
+      // Only fields turn dictation on; clicking a link should not.
+      const el = (this.snapshot?.elements ?? []).find((e) => e.id === action.targetId);
+      const role = el?.role || "";
+      this.dictation = /textbox|searchbox|combobox|input|textarea/.test(role);
+    }
+  }
+
   async _runAction(action, meta = {}) {
     this.busy = true;
     const t0 = Date.now();
@@ -371,6 +415,9 @@ export class Controller extends EventEmitter {
       };
       this._log(res.ok ? "act" : "warn", `${res.ok ? "✓" : "✗"} ${describe(action)} — decided ${decisionMs ?? "?"}ms after last word, executed in ${took}ms ${res.detail || ""}`);
       this.emit("action", entry);
+      // Done here rather than at the call sites: actions reach this method from the policy
+      // branch, from a candidate pick, and from undo, and each must update dictation.
+      this._updateDictation(action);
       return res;
     } catch (err) {
       this._log("error", `action failed: ${describe(action)} — ${err.message || err}`);
@@ -437,9 +484,12 @@ export class Controller extends EventEmitter {
         title: this.snapshot.title,
         site: this.snapshot.site,
         searchBoxId: this.snapshot.searchBoxId,
+        focusedFieldId: this.snapshot.focusedFieldId ?? null,
         elements: this.snapshot.elements,
         tabs: this.snapshot.tabs,
       },
+      // Dictation is on when the caret sits in a field; surfaced so the control page can show it.
+      dictation: this.dictation,
       lastDecision: this.lastDecision,
       context: this.context,
       pending: this.pending ? { summary: describe(this.pending) } : null,

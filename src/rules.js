@@ -39,6 +39,30 @@ const RULES = [
   // reaching for the mouse, and back on again when they are ready.
   { intent: "stop_listening", re: /^(stop|pause|halt|shut up|be quiet|quiet)\s*(listening|the mic|hearing me|voice)?$|^stop listening$|^pause listening$|^stop hearing me$|^(mute|unlisten)$/ },
   { intent: "start_listening", re: /^(start|resume|unpause|continue)\s*(listening|the mic|hearing me|voice)?$|^start listening$|^resume listening$|^listen( again)?$|^wake up$/ },
+  // Keyboard control. Enter was the only key reachable by voice, which makes filling in a
+  // form impossible: there is no way to get between fields, fix a mistake, or dismiss a dialog.
+  { intent: "press_key", key: "Tab", re: /^(press |hit |push |tap )?tab( key)?$|^tab (over|on)( to the)? next( (field|box|one))?$|^next field$|^move to the next (field|box)$/ },
+  { intent: "press_key", key: "Escape", re: /^(press |hit |push |tap )?escape( key)?$|^escape$|^dismiss( this| that| the (dialog|popup|menu))?$|^close (the |this )?(dialog|popup|menu)$|^cancel that$|^get rid of (that|this)$/ },
+  { intent: "press_key", key: "Backspace", re: /^(press |hit |push |tap )?back ?space( key)?$|^back ?space$|^delete (the |that )?(last|previous) (character|letter|word)$|^erase (a|one|the last) (character|letter)$/ },
+  { intent: "press_key", key: "Delete", re: /^(press |hit |push |tap )?delete( key)?$|^delete (the |that )?(next|following) (character|letter)$/ },
+  { intent: "press_key", key: "ArrowDown", re: /^(press |hit |push |tap )?(down|down arrow|arrow down)( key)?$|^down arrow$/ },
+  { intent: "press_key", key: "ArrowUp", re: /^(press |hit |push |tap )?(up|up arrow|arrow up)( key)?$|^up arrow$/ },
+  { intent: "press_key", key: "ArrowLeft", re: /^(press |hit |push |tap )?(left|left arrow|arrow left)( key)?$|^left arrow$/ },
+  { intent: "press_key", key: "ArrowRight", re: /^(press |hit |push |tap )?(right|right arrow|arrow right)( key)?$|^right arrow$/ },
+  { intent: "press_key", key: "Home", re: /^(press |hit |push |tap )?home( key)?$|^(go|jump|move) to (the )?(start|beginning)( of the line)?$/ },
+  { intent: "press_key", key: "End", re: /^(press |hit |push |tap )?end( key)?$|^(go|jump|move) to (the )?end( of the line)?$/ },
+  { intent: "press_key", key: " ", re: /^(space|space ?bar)( key)?$|^type (a )?space$/ },
+  // Clipboard and editing shortcuts.
+  { intent: "press_key", key: "Control+a", re: /^select all$|^select everything$|^(press |hit )?control a$|^highlight everything$/ },
+  { intent: "press_key", key: "Control+c", re: /^copy( (that|this|it))?$|^(press |hit )?control c$/ },
+  { intent: "press_key", key: "Control+v", re: /^paste( (that|this|it))?$|^(press |hit )?control v$/ },
+  { intent: "press_key", key: "Control+x", re: /^cut( (that|this|it))?$|^(press |hit )?control x$/ },
+  // Bare "undo"/"redo" already belong to the page-history rules above, and they match first,
+  // so only the explicit chords are reachable here. Left as chords rather than stealing the words.
+  { intent: "press_key", key: "Control+z", re: /^(press |hit )?control z$/ },
+  { intent: "press_key", key: "Control+y", re: /^(press |hit )?control y$/ },
+  // Clearing the whole field in one go.
+  { intent: "clear_field", re: /^(?:clear|empty|wipe|reset|start over)(?: the| that| this)?(?: box| field| input| search box)?$|^clear (?:it|that text|what i said|what i typed)$|^start (?:that|the) (?:over|again)$/ },
 ];
 
 const SITE_WORDS = {
@@ -185,6 +209,8 @@ export function recognize(transcript, { site: snapshotSite = "generic" } = {}) {
       out.url_span = { type: "choice", choice: rule.url, confidence: 0.9, probabilities: { [rule.url]: 0.9, none: 0.1 } };
       return out;
     }
+    // Keys travel as a target-free payload; code owns the mapping so the model never picks them.
+    if (rule.key) out.press_key = { key: rule.key };
     out.intent = high(rule.intent);
     return out;
   }

@@ -121,12 +121,28 @@ export function collectElementsInPage() {
     });
   }
 
+  // The element the caret is actually in. Dictation needs this: without it, "type the next
+  // word" has to name a target every time, which is what made text entry so slow.
+  let focusedFieldId = null;
+  try {
+    const a = doc.activeElement;
+    if (a && a !== doc.body) {
+      focusedFieldId = a.getAttribute?.("data-vb-id") || null;
+      if (!focusedFieldId && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) {
+        window.__vbNextId = window.__vbNextId || 1;
+        focusedFieldId = `vb${window.__vbNextId++}`;
+        a.setAttribute("data-vb-id", focusedFieldId);
+      }
+    }
+  } catch {}
+
   return {
     url: location.href,
     title: doc.title,
     scrollY: win.scrollY,
     scrollHeight: doc.documentElement.scrollHeight,
     viewportHeight: vh,
+    focusedFieldId,
     elements: out,
   };
 }
@@ -227,6 +243,7 @@ export function buildSnapshot(pageData, extra = {}) {
     scrollHeight: pageData.scrollHeight,
     viewportHeight: pageData.viewportHeight,
     searchBoxId,
+    focusedFieldId: pageData.focusedFieldId ?? null,
     elements,
     rawById: Object.fromEntries(pageData.elements.map((e) => [e.id, e])),
     ...extra,

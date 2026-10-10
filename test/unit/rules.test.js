@@ -188,6 +188,34 @@ test("'show numbers' numbers the page however it is phrased", () => {
   }
 });
 
+test("keyboard commands reach the browser as keys and chords", () => {
+  const keyOf = (p) => {
+    const r = recognize(p);
+    return r?.intent?.choice === "press_key" ? r.press_key.key : r?.intent?.choice ?? null;
+  };
+  assert.equal(keyOf("tab"), "Tab");
+  assert.equal(keyOf("escape"), "Escape");
+  assert.equal(keyOf("dismiss that"), "Escape");
+  assert.equal(keyOf("backspace"), "Backspace");
+  assert.equal(keyOf("delete"), "Delete");
+  assert.equal(keyOf("home"), "Home");
+  assert.equal(keyOf("end"), "End");
+  assert.equal(keyOf("down arrow"), "ArrowDown");
+  assert.equal(keyOf("up arrow"), "ArrowUp");
+  assert.equal(keyOf("select all"), "Control+a");
+  assert.equal(keyOf("copy"), "Control+c");
+  assert.equal(keyOf("paste"), "Control+v");
+  assert.equal(keyOf("cut"), "Control+x");
+  assert.equal(keyOf("control z"), "Control+z");
+  assert.equal(keyOf("clear the box"), "clear_field");
+  assert.equal(keyOf("clear that"), "clear_field");
+  // Page-level undo/redo already belong to the history rules and must keep winning.
+  assert.equal(keyOf("undo that"), "go_back");
+  assert.equal(keyOf("redo that"), "go_forward");
+  // Enter keeps working.
+  assert.equal(keyOf("press enter"), "press_enter");
+});
+
 test("'show numbers' does not swallow real navigation or scrolling", () => {
   assert.equal(intentOf("show me google"), "navigate_url");
   assert.equal(intentOf("open youtube"), "navigate_url");
