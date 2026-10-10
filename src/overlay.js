@@ -18,14 +18,14 @@ export function installOverlay() {
       border:2px solid #fff}
     .__vb-cand{position:absolute;border:2px dashed #2563eb;border-radius:6px;z-index:${Z};pointer-events:none;
       background:rgba(37,99,235,.08)}
-    .__vb-cursor{position:fixed;left:0;top:0;width:13px;height:13px;margin:-6.5px 0 0 -6.5px;z-index:${Z};
+    .__vb-cursor{position:fixed;left:0;top:0;width:14px;height:14px;margin:-7px 0 0 -7px;z-index:${Z};
       pointer-events:none;will-change:transform}
-    .__vb-cursor::before{content:"";position:absolute;inset:0;border-radius:50%;background:rgba(245,158,11,.30);
-      border:1.5px solid #f59e0b;box-shadow:0 0 0 1px rgba(0,0,0,.30),0 0 6px rgba(245,158,11,.65)}
-    .__vb-cursor::after{content:"";position:absolute;left:50%;top:50%;width:3px;height:3px;margin:-1.5px 0 0 -1.5px;
+    .__vb-cursor::before{content:"";position:absolute;inset:0;border-radius:50%;background:rgba(245,158,11,.35);
+      border:1.5px solid #f59e0b;box-shadow:0 0 0 1px rgba(0,0,0,.30),0 0 8px rgba(245,158,11,.75);transition:transform .12s,background .12s}
+    .__vb-cursor::after{content:"";position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px 0 0 -2px;
       border-radius:50%;background:#fde68a}
-    .__vb-cursor.__vb-cursor-down::before{background:rgba(239,68,68,.42);border-color:#ef4444;
-      box-shadow:0 0 0 1px rgba(0,0,0,.30),0 0 10px rgba(239,68,68,.9)}
+    .__vb-cursor.__vb-cursor-down::before{background:rgba(239,68,68,.55);border-color:#ef4444;
+      box-shadow:0 0 0 2px rgba(239,68,68,.3),0 0 14px rgba(239,68,68,1);transform:scale(1.3)}
     .__vb-cursor.__vb-cursor-hide{display:none}
   `;
   const ensureStyle = () => {
@@ -61,7 +61,7 @@ export function installOverlay() {
         cursorEl = document.createElement("div");
         cursorEl.className = "__vb-cursor";
         cursorEl.__vbLast = { x: 0, y: 0, visible: false, down: false };
-        (document.body || document.documentElement).appendChild(cursorEl);
+        (document.documentElement || document.body).appendChild(cursorEl);
       }
       if (!visible) {
         cursorEl.classList.add("__vb-cursor-hide");
@@ -69,7 +69,15 @@ export function installOverlay() {
         return true;
       }
       cursorEl.classList.remove("__vb-cursor-hide");
-      cursorEl.classList.toggle("__vb-cursor-down", Boolean(down));
+      if (down) {
+        cursorEl.classList.add("__vb-cursor-down");
+        clearTimeout(cursorEl.__vbDownTimer);
+        cursorEl.__vbDownTimer = setTimeout(() => {
+          if (cursorEl) cursorEl.classList.remove("__vb-cursor-down");
+        }, 180);
+      } else if (!cursorEl.__vbDownTimer) {
+        cursorEl.classList.remove("__vb-cursor-down");
+      }
       cursorEl.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
       cursorEl.__vbLast = { x: Math.round(x), y: Math.round(y), visible: true, down: Boolean(down) };
       return true;
@@ -135,7 +143,9 @@ export function installOverlay() {
     },
   };
   window.__vb = api;
-  window.addEventListener("pointermove", (e) => api.cursor({ x: e.clientX, y: e.clientY }), { passive: true });
-  window.addEventListener("pointerdown", (e) => api.cursor({ x: e.clientX, y: e.clientY, down: true }), { passive: true });
-  window.addEventListener("pointerup", (e) => api.cursor({ x: e.clientX, y: e.clientY, down: false }), { passive: true });
+  const onMove = (e) => api.cursor({ x: e.clientX, y: e.clientY });
+  window.addEventListener("pointermove", onMove, { passive: true, capture: true });
+  window.addEventListener("mousemove", onMove, { passive: true, capture: true });
+  window.addEventListener("pointerdown", (e) => api.cursor({ x: e.clientX, y: e.clientY, down: true }), { passive: true, capture: true });
+  window.addEventListener("pointerup", (e) => api.cursor({ x: e.clientX, y: e.clientY, down: false }), { passive: true, capture: true });
 }

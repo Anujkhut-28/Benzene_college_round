@@ -72,6 +72,7 @@ export class BrowserManager {
     });
     page.on("framenavigated", async (frame) => {
       if (frame === page.mainFrame()) {
+        this._cachedVp = null;
         // The overlay (and the tracking cursor) lives in the document, so a navigation
         // destroys them. Wait for the new DOM, then put the cursor back where it was.
         setTimeout(() => this.repaintCursor().catch(() => {}), 350);
@@ -165,10 +166,23 @@ export class BrowserManager {
       });
   }
 
+  async getViewport() {
+    const page = this.page;
+    if (!page || page.isClosed()) return { width: 1280, height: 900 };
+    const vp = page.viewportSize();
+    if (vp && vp.width && vp.height) return vp;
+    if (this._cachedVp) return this._cachedVp;
+    try {
+      const inner = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+      if (inner && inner.width && inner.height) {
+        this._cachedVp = inner;
+        return inner;
+      }
+    } catch {}
+    return { width: 1280, height: 900 };
+  }
+
   async pointer(opts = {}) {
-    if (opts.click) {
-      return this._execPointer(opts);
-    }
     this._nextPointer = opts;
     if (this._pointerBusy) return { ok: true };
     this._pointerBusy = true;
@@ -187,15 +201,18 @@ export class BrowserManager {
   async _execPointer({ x, y, click = false } = {}) {
     const page = this.page;
     if (!page || page.isClosed()) return { ok: false };
-    const vp = page.viewportSize() || this.viewport || { width: 1280, height: 900 };
+    const vp = await this.getViewport();
     const px = Math.round(Math.max(0, Math.min(1, Number(x) || 0)) * (vp.width - 1));
     const py = Math.round(Math.max(0, Math.min(1, Number(y) || 0)) * (vp.height - 1));
+    this.lastPointer = { x, y, px, py };
+
     if (click) {
+      await this.overlay("cursor", { x: px, y: py, visible: true, down: true }).catch(() => {});
       await page.mouse.click(px, py).catch(() => {});
     } else {
       await page.mouse.move(px, py).catch(() => {});
+      await this.overlay("cursor", { x: px, y: py, visible: true, down: false }).catch(() => {});
     }
-    this.lastPointer = { x, y, px, py };
     return { ok: true, detail: `${px},${py}` };
   }
 
@@ -204,12 +221,13 @@ export class BrowserManager {
     if (!s) return;
     const page = this.page;
     if (!page || page.isClosed()) return;
+    await this.overlay("cursor", { x: s.px, y: s.py, visible: true, down: false }).catch(() => {});
     await page.mouse.move(s.px, s.py).catch(() => {});
   }
 
   /**
    * Click an element by id, but refuse anything the policy would treat as destructive.
-   * A gaze/dwell click must never be able to buy something or submit a form on its own.
+   * A pointer/pinch click must never be able to buy something or submit a form on its own.
    */
   async clickElement(id, { source = "pointer", destructiveGuard = true } = {}) {
     const page = await this.ensurePage();

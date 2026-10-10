@@ -4,12 +4,12 @@ Accessibility-focused browsing for people with motor impairments. Control a real
 **voice commands** and **webcam head tracking** — no mouse, no keyboard, no special hardware.
 
 - **Voice navigation** — say "go to wikipedia", "search for alan turing", "scroll down", "go back".
-- **Head tracking** — look around to move the cursor in the controlled window; hold still to click.
-- **Hands-free clicking** — click with a thumb-and-finger pinch, or by holding your gaze.
-- **Webcam eye tracking** — move your eyes to aim, **pinch** (or hold your gaze) to click.
+- **Head & eye tracking** — look around to move the cursor smoothly in the controlled window.
+- **Hands-free clicking** — click with a thumb-and-finger pinch.
+- **Webcam eye tracking** — move your eyes to aim, pinch to click.
 - **Speech to text** — live transcripts stream into the page (Chrome/Edge Web Speech API).
 - **Safe selection** — risky actions (buy, submit, delete, send) always require a spoken
-  *"confirm"*, and dwell-clicks on such buttons are refused outright.
+  *"confirm"*, and clicks on such buttons are refused outright.
 - **Runs entirely offline** — the decision model is embedded in the Node process. No API key,
   no cloud, no LM Studio.
 
@@ -63,24 +63,17 @@ Type a command into the control page if you have no microphone — same code pat
 Click **Enable eye control** and allow the camera. Move your **eyes** to move the cursor in the
 controlled window. Press **Re-center** whenever you shift posture or want to change your neutral gaze.
 
-**Clicking** is chosen in the **Click** dropdown:
-
-| click mode | how to click |
-| --- | --- |
-| `pinch` (default) | **pinch** — bring thumb and index finger together, like a mouse click. One pinch = one click. |
-| `both` | pinch, or hold your gaze still for the dwell time |
-| `dwell` | hold your gaze still — no hands needed |
+**Clicking** is performed using a quick pinch gesture: bring thumb and index finger together, like a mouse click. One pinch = one click.
 
 The cursor turns red and the status reads **pinch — click!** while a pinch is closed. Closing and
 re-opening the pinch fires a new click, so you can click repeatedly by pinching again.
 
 | control | what it does |
 | --- | --- |
-| **Tracking** `eyes` | iris position only — most precise, needs a steady head |
+| **Tracking** `eyes` | natural gaze (eyes + head orientation) — most precise |
 | **Tracking** `eyes + head` | averages gaze and head pose — steadier, recommended if you cannot hold still |
 | **Tracking** `head only` | coarse; for people who cannot move their eyes comfortably |
 | **Sensitivity** | gain. Turn up if the cursor will not reach the screen edges, down if it is too twitchy |
-| **Dwell** | dwell-click duration. Longer = fewer accidental clicks |
 | **mirror** | flip left/right — turn off if the cursor moves the wrong way |
 | **show video** | camera preview with the tracked points drawn on it |
 
@@ -96,14 +89,12 @@ without turning your whole body, and holding a fixed neck position for a second 
 If the camera cannot see your eyes clearly, switch to **eyes + head**.
 
 Everything else keeps working if there is no camera or permission is denied — tracking is optional.
-The hand model is only downloaded when you use pinch.
 
 The tracker uses MediaPipe Face Landmarker in the browser; no video leaves the machine.
 
 ### Safety
 
 - Destructive clicks are blocked and answered with *"say confirm to activate this"*.
-- Dwell-click requires an intentional hold, with a visible progress ring.
 - Every voice command still passes through the same policy gates as before: it must be addressed to
   the browser, confident, complete, and non-destructive.
 
@@ -136,7 +127,7 @@ pass and returns calibrated probabilities.
  "open wikip…"                      page snapshot (≤100 elements) ◀──   persistent profile
                                     ONE model pass:                     highlight / toast /
  "Open Wikipedia."  ◀────────────────  intent · target · site ·          numbered overlays
-                                    complete · is_command · …           dwell-to-click
+                                    complete · is_command · …           pinch-to-click
 ```
 
 - `src/runtime.js` loads the GGUF in-process via `node-llama-cpp` (GPU, CPU fallback).
@@ -145,7 +136,7 @@ pass and returns calibrated probabilities.
 - `src/rules.js` recognises everyday commands instantly, with no model call.
 - `src/policy.js` turns answers into act / wait / ignore / confirm / disambiguate, with every
   threshold shown live in the UI.
-- `src/public/head-tracker.js` runs webcam head tracking and dwell-to-click in the control page.
+- `src/public/head-tracker.js` runs webcam eye/head tracking and pinch-to-click in the control page.
 
 ## Configuration
 

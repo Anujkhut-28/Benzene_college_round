@@ -64,3 +64,45 @@ test("head tracker: pinch activates and releases", () => {
   const separated = makeHand(0.12);
   assert.equal(tracker.pinching(separated), false);
 });
+
+function makeFaceWithEyes({ irisOffsetDx = 0, lidClosed = false } = {}) {
+  const marks = makeFace();
+  marks[33] = { x: 0.35, y: 0.45, z: 0 };
+  marks[133] = { x: 0.45, y: 0.45, z: 0 };
+  marks[159] = { x: 0.40, y: lidClosed ? 0.45 : 0.42, z: 0 };
+  marks[145] = { x: 0.40, y: lidClosed ? 0.45 : 0.48, z: 0 };
+  for (let i = 468; i <= 472; i++) {
+    marks[i] = { x: 0.40 + irisOffsetDx, y: 0.45, z: 0 };
+  }
+  marks[362] = { x: 0.55, y: 0.45, z: 0 };
+  marks[263] = { x: 0.65, y: 0.45, z: 0 };
+  marks[386] = { x: 0.60, y: lidClosed ? 0.45 : 0.42, z: 0 };
+  marks[374] = { x: 0.60, y: lidClosed ? 0.45 : 0.48, z: 0 };
+  for (let i = 473; i <= 477; i++) {
+    marks[i] = { x: 0.60 + irisOffsetDx, y: 0.45, z: 0 };
+  }
+  return marks;
+}
+
+test("eye tracker: iris shift moves gaze horizontally", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "eye", mirror: true });
+  const center = tracker.compute(makeFaceWithEyes({ irisOffsetDx: 0 }));
+  assert.equal(center.x, 0.5);
+
+  const lookRight = tracker.compute(makeFaceWithEyes({ irisOffsetDx: -0.02 }));
+  assert.ok(lookRight.x > 0.5);
+
+  const lookLeft = tracker.compute(makeFaceWithEyes({ irisOffsetDx: 0.02 }));
+  assert.ok(lookLeft.x < 0.5);
+});
+
+test("eye tracker: blink maintains stable gaze without exploding", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "eye" });
+  tracker.compute(makeFaceWithEyes({ irisOffsetDx: 0 }));
+  const openGaze = tracker.compute(makeFaceWithEyes({ irisOffsetDx: 0.01 }));
+
+  const blinkingGaze = tracker.compute(makeFaceWithEyes({ irisOffsetDx: 0.01, lidClosed: true }));
+  assert.ok(Math.abs(blinkingGaze.y - openGaze.y) < 0.05);
+});
