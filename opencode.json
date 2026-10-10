@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "git": {
+        "type": "local",
+        "command": ["uvx", "--from", "mcp-server-git", "mcp-server-git", "--repository", "."],
+        "cwd": "."
+      }
+    }
+  }
+}

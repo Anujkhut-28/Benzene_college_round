@@ -1,20 +1,22 @@
 /**
- * Hands-free pointer: webcam EYE tracking drives the cursor, dwell-to-click activates.
+ * Hands-free pointer: webcam EYE tracking drives the cursor, pinch-to-click activates.
  * Runs entirely in the browser on the control page and forwards synthetic pointer events
  * into the controlled page over the existing WebSocket.
  *
- * Eyes beat the head for pointing because the head is far coarser: you cannot reach the screen
- * corners by turning your neck without also turning your whole body, and holding a fixed pose
- * for 900 ms is uncomfortable. Eye direction is precise, and it needs no head movement at all.
- * Iris landmarks are read when the model provides them (478-point output); otherwise we fall
- * back to head pose so the feature degrades instead of breaking.
+ * Smoothing pipeline (each layer removes a different kind of noise):
+ *   1. median filter on the raw iris position  -> kills single-frame landmark spikes
+ *   2. One Euro filter on the cursor position  -> steady at rest, responsive on big moves
+ *   3. "leash" (holdRadius)                    -> ignores wobble smaller than a small radius
  */
 
 const DEFAULTS = {
   enabled: false,
   mode: "eye",
   sensitivity: 1.0,
-  smoothing: 0.2,
+  minCutoff: 0.25, // One Euro: lower = steadier when still
+  beta: 0.7, // One Euro: higher = snappier when moving
+  eyeMedian: 1, // median window on the raw iris; start() raises this to 5
+  holdRadius: 0.008, // leash: ignore gaze wobble smaller than ~0.8% of the screen
   margin: 0.05,
   deadzone: 0.003,
   mirror: true,
@@ -22,6 +24,8 @@ const DEFAULTS = {
   clickMode: "pinch",
   pinchOn: 0.25,
   pinchOff: 0.35,
+  calibrationFrames: 1, // start() raises this to 20
+  blinkHoldMs: 150,
 };
 
 const L_IRIS = [468, 469, 470, 471, 472];
@@ -29,12 +33,43 @@ const R_IRIS = [473, 474, 475, 476, 477];
 const NOSE = 1;
 const L_CHEEK = 234;
 const R_CHEEK = 454;
-const TOP = 10;
 
 const EYE_GAIN_X = 6.5;
 const EYE_GAIN_Y = 8.5;
 const HEAD_GAIN_X = 5.0;
 const HEAD_GAIN_Y = 6.0;
+
+/** One Euro filter: adaptive low-pass that kills jitter at rest but keeps up with fast moves. */
+class OneEuro {
+  constructor() {
+    this.reset();
+  }
+  reset() {
+    this.x = null;
+    this.dx = 0;
+    this.t = 0;
+  }
+  static alpha(cutoff, dt) {
+    const tau = 1 / (2 * Math.PI * cutoff);
+    return 1 / (1 + tau / dt);
+  }
+  filter(v, tMs, minCutoff, beta) {
+    if (this.x === null) {
+      this.x = v;
+      this.t = tMs;
+      return v;
+    }
+    const dt = Math.max(1e-3, (tMs - this.t) / 1000);
+    this.t = tMs;
+    const rawDx = (v - this.x) / dt;
+    this.dx += OneEuro.alpha(1, dt) * (rawDx - this.dx);
+    const cutoff = minCutoff + beta * Math.abs(this.dx);
+    this.x += OneEuro.alpha(cutoff, dt) * (v - this.x);
+    return this.x;
+  }
+}
+
+const newCal = () => ({ n: 0, yaw: 0, pitch: 0, ex: 0, ey: 0, en: 0 });
 
 export class HeadTracker {
   constructor({ video, canvas, onStatus, onPoint, onActivate }) {
@@ -45,19 +80,26 @@ export class HeadTracker {
     this.onActivate = onActivate || (() => {});
     this.cfg = { ...DEFAULTS };
     this.landmarker = null;
+    this.handLandmarker = null;
     this.running = false;
     this.raf = 0;
     this.point = { x: 0.5, y: 0.5 };
     this.smooth = { x: 0.5, y: 0.5 };
+    this.fx = new OneEuro();
+    this.fy = new OneEuro();
     this.calibrating = true;
+    this._cal = newCal();
     this.baseline = null;
     this.eyeBase = null;
     this._lastGaze = null;
     this._isBlinking = false;
-    this.faceSeenSince = 0;
+    this._blinkUntil = 0;
+    this._eyeBuf = [];
+    this._lastVideoTime = -1;
+    this._frame = 0;
+    this._pinch = false;
     this.pinched = false;
     this.pinchWasDown = false;
-    this.handLandmarker = null;
   }
 
   get config() {
@@ -112,6 +154,9 @@ export class HeadTracker {
 
     this.running = true;
     this.cfg.enabled = true;
+    this.cfg.calibrationFrames = Math.max(this.cfg.calibrationFrames, 20);
+    this.cfg.eyeMedian = Math.max(this.cfg.eyeMedian, 5);
+    this.recalibrate();
     this.onStatus({ state: "running" });
     if (this.cfg.clickMode === "pinch") await this.loadHands();
     this.loop();
@@ -152,7 +197,10 @@ export class HeadTracker {
    * any distance from the camera, with hysteresis so a trembling hand cannot chatter clicks.
    */
   pinching(hand) {
-    if (!hand || hand.length < 21) return false;
+    if (!hand || hand.length < 21) {
+      this.pinched = false;
+      return false;
+    }
     const thumb = hand[4];
     const index = hand[8];
     const wrist = hand[0];
@@ -181,15 +229,22 @@ export class HeadTracker {
     this.handLandmarker = null;
     this.pinched = false;
     this.pinchWasDown = false;
+    this._pinch = false;
+    this._lastVideoTime = -1;
     this.onStatus({ state: "stopped" });
   }
 
   recalibrate() {
     this.calibrating = true;
+    this._cal = newCal();
     this.baseline = null;
     this.eyeBase = null;
     this._lastGaze = null;
     this._isBlinking = false;
+    this._blinkUntil = 0;
+    this._eyeBuf = [];
+    this.fx.reset();
+    this.fy.reset();
     this.smooth = { x: 0.5, y: 0.5 };
     this.point = { x: 0.5, y: 0.5 };
   }
@@ -199,6 +254,11 @@ export class HeadTracker {
     this.raf = requestAnimationFrame(() => this.loop());
     const v = this.video;
     if (!v || v.readyState < 2 || !this.landmarker) return;
+
+    // The camera delivers ~30 fps but rAF fires at the display rate. Re-detecting the same
+    // frame wastes time and feeds zero-delta samples to the filter.
+    if (v.currentTime === this._lastVideoTime) return;
+    this._lastVideoTime = v.currentTime;
 
     const now = performance.now();
     const ts = now <= (this._lastFaceTime || 0) ? (this._lastFaceTime || 0) + 1 : now;
@@ -212,7 +272,10 @@ export class HeadTracker {
     }
     const marks = res?.faceLandmarks?.[0];
     if (!marks) {
-      this.faceSeenSince = performance.now();
+      // Re-seed the filters when the face comes back so the cursor does not glide in from stale state.
+      this.fx.reset();
+      this.fy.reset();
+      this._eyeBuf = [];
       this.onStatus({ state: "running", face: false });
       this.draw(null);
       return;
@@ -221,18 +284,30 @@ export class HeadTracker {
     const p = this.compute(marks);
     if (!p) return;
 
-    // Adaptive smoothing: filter micro-tremors while remaining responsive to rapid gaze shifts
-    const dist = Math.hypot(p.x - this.smooth.x, p.y - this.smooth.y);
-    const baseAlpha = Math.max(0.08, Math.min(0.5, 1 - this.cfg.smoothing));
-    const dynamicAlpha = Math.min(0.65, baseAlpha + Math.min(dist * 2.5, 0.35));
+    this.smooth = {
+      x: this.fx.filter(p.x, ts, this.cfg.minCutoff, this.cfg.beta),
+      y: this.fy.filter(p.y, ts, this.cfg.minCutoff, this.cfg.beta),
+    };
 
-    this.smooth.x += (p.x - this.smooth.x) * dynamicAlpha;
-    this.smooth.y += (p.y - this.smooth.y) * dynamicAlpha;
-    this.point = { x: this.smooth.x, y: this.smooth.y };
+    // Leash: the cursor only moves once the filtered gaze is further than holdRadius away,
+    // and then it trails the gaze by that radius. Wobble inside the radius is ignored.
+    const dx = this.smooth.x - this.point.x;
+    const dy = this.smooth.y - this.point.y;
+    const dist = Math.hypot(dx, dy);
+    const r = this.cfg.holdRadius;
+    if (dist > r) {
+      const k = (dist - r) / dist;
+      this.point = { x: this.point.x + dx * k, y: this.point.y + dy * k };
+    }
+
     this.draw(marks);
     this.onPoint(this.point);
 
-    const pinch = this.cfg.clickMode === "pinch" && this.handLandmarker ? this.detectPinch(v) : false;
+    // Hand model is the expensive part; every second frame is plenty for a pinch.
+    this._frame += 1;
+    const wantPinch = this.cfg.clickMode === "pinch" && this.handLandmarker;
+    if (wantPinch && this._frame % 2 === 0) this._pinch = this.detectPinch(v);
+    const pinch = wantPinch ? this._pinch : false;
     if (pinch && !this.pinchWasDown) {
       this.onActivate({ click: { ...this.point }, pinch: true });
     }
@@ -247,8 +322,7 @@ export class HeadTracker {
       const ts = now <= (this._lastHandTime || 0) ? (this._lastHandTime || 0) + 1 : now;
       this._lastHandTime = ts;
       const r = this.handLandmarker.detectForVideo(v, ts);
-      const hand = r?.landmarks?.[0];
-      return this.pinching(hand);
+      return this.pinching(r?.landmarks?.[0]);
     } catch {
       return false;
     }
@@ -258,7 +332,6 @@ export class HeadTracker {
     const nose = marks[NOSE];
     const leftCheek = marks[L_CHEEK];
     const rightCheek = marks[R_CHEEK];
-
     if (!nose || !leftCheek || !rightCheek) return null;
 
     const midX = (leftCheek.x + rightCheek.x) / 2;
@@ -267,20 +340,36 @@ export class HeadTracker {
     const yaw = (nose.x - midX) / cheekDist;
     const pitch = (nose.y - midY) / cheekDist;
 
-    const gaze = this.cfg.mode === "head" ? null : this.eyeGaze(marks);
+    const needEye = this.cfg.mode !== "head" && marks.length >= 478;
+    const eye = needEye ? this.eyeSample(marks) : null;
 
     if (this.calibrating) {
-      this.baseline = { yaw, pitch };
-      if (!this._isBlinking) {
-        this.calibrating = false;
+      // Average several frames so one glance or blink cannot define "center".
+      const usable = !needEye || (eye && !eye.blinking);
+      if (usable) {
+        const c = this._cal;
+        c.n += 1;
+        c.yaw += yaw;
+        c.pitch += pitch;
+        if (needEye) {
+          c.ex += eye.x;
+          c.ey += eye.y;
+          c.en += 1;
+        }
+        if (c.n >= this.cfg.calibrationFrames) {
+          this.baseline = { yaw: c.yaw / c.n, pitch: c.pitch / c.n };
+          if (c.en) this.eyeBase = { x: c.ex / c.en, y: c.ey / c.en };
+          this.calibrating = false;
+        }
       }
       return { x: 0.5, y: 0.5 };
     }
 
+    const gaze = this.eyeGaze(eye);
+
     let rawX;
     let rawY;
     if (gaze && this.cfg.mode === "eye") {
-      // Natural gaze: eye direction + head pose orientation
       const headX = this.centered(yaw, "yaw");
       const headY = this.centered(pitch, "pitch");
       rawX = gaze.x + (headX - 0.5) * 0.4;
@@ -316,41 +405,48 @@ export class HeadTracker {
     return 0.5 + (value - this.baseline[axis]) * gain;
   }
 
-  eyeGaze(marks) {
+  /**
+   * Raw iris position for this frame (average of the open eyes, median-filtered over the last
+   * few frames), or { blinking: true } while the lids are closed and for blinkHoldMs afterwards,
+   * or null if unavailable.
+   */
+  eyeSample(marks) {
     if (!marks || marks.length < 478) return null;
     const left = irisOffset(marks, L_IRIS, 33, 133, 159, 145);
     const right = irisOffset(marks, R_IRIS, 362, 263, 386, 374);
     if (!left && !right) return null;
 
-    const bothBlinking = Boolean(left?.blinking && right?.blinking);
-    this._isBlinking = bothBlinking;
-
-    // During a blink, hold the previous gaze to avoid jumping to extremes
-    if (bothBlinking) {
-      return this._lastGaze || null;
+    const now = performance.now();
+    const open = [left, right].filter((e) => e && !e.blinking);
+    if (!open.length) {
+      this._blinkUntil = now + this.cfg.blinkHoldMs;
+      this._isBlinking = true;
+      return { blinking: true };
     }
-
-    let rawX, rawY;
-    if (left && right && !left.blinking && !right.blinking) {
-      rawX = (left.x + right.x) / 2;
-      rawY = (left.y + right.y) / 2;
-    } else if (left && !left.blinking) {
-      rawX = left.x;
-      rawY = left.y;
-    } else if (right && !right.blinking) {
-      rawX = right.x;
-      rawY = right.y;
-    } else {
-      return this._lastGaze || null;
+    // Lids reopening still drag the iris landmarks; wait for them to settle.
+    if (now < this._blinkUntil) {
+      this._isBlinking = true;
+      return { blinking: true };
     }
+    this._isBlinking = false;
 
-    if (!this.eyeBase) {
-      this.eyeBase = { x: rawX, y: rawY };
-    }
+    const raw = {
+      x: open.reduce((a, e) => a + e.x, 0) / open.length,
+      y: open.reduce((a, e) => a + e.y, 0) / open.length,
+    };
+    this._eyeBuf.push(raw);
+    if (this._eyeBuf.length > this.cfg.eyeMedian) this._eyeBuf.shift();
+    return { x: median(this._eyeBuf.map((e) => e.x)), y: median(this._eyeBuf.map((e) => e.y)) };
+  }
 
+  /** Gaze position (0..1) relative to the calibrated neutral, or null when unavailable. */
+  eyeGaze(eye) {
+    if (!eye) return null;
+    if (eye.blinking) return this._lastGaze || null; // hold during blinks
+    if (!this.eyeBase) this.eyeBase = { x: eye.x, y: eye.y };
     const gaze = {
-      x: 0.5 + (rawX - this.eyeBase.x) * EYE_GAIN_X,
-      y: 0.5 + (rawY - this.eyeBase.y) * EYE_GAIN_Y,
+      x: 0.5 + (eye.x - this.eyeBase.x) * EYE_GAIN_X,
+      y: 0.5 + (eye.y - this.eyeBase.y) * EYE_GAIN_Y,
     };
     this._lastGaze = gaze;
     return gaze;
@@ -391,10 +487,14 @@ function clamp01(v) {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
+function median(a) {
+  const s = [...a].sort((p, q) => p - q);
+  return s[Math.floor(s.length / 2)];
+}
+
 /**
  * Iris centre relative to eye corners, normalized by eye width so the result is
- * independent of face size, distance, and head roll.
- * Includes blink/eyelid closure detection to prevent vertical gaze exploding during blinks.
+ * independent of face size, distance, and head roll. Includes eyelid-closure detection.
  */
 function irisOffset(marks, irisIdx, cornerA, cornerB, lidTop, lidBottom) {
   const a = marks[cornerA];
@@ -420,28 +520,17 @@ function irisOffset(marks, irisIdx, cornerA, cornerB, lidTop, lidBottom) {
   const eyeWidth = Math.hypot(dx, dy);
   if (eyeWidth < 1e-4) return null;
 
-  // Blink detection: distance between eyelids relative to eye width
   const top = marks[lidTop];
   const bottom = marks[lidBottom];
   let isBlinking = false;
   if (top && bottom) {
     const lidDist = Math.hypot(top.x - bottom.x, top.y - bottom.y);
-    if (lidDist / eyeWidth < 0.12) {
-      isBlinking = true;
-    }
+    if (lidDist / eyeWidth < 0.12) isBlinking = true;
   }
 
-  // Normalized horizontal position along cornerA -> cornerB axis
   const normX = ((irisX - a.x) * dx + (irisY - a.y) * dy) / (eyeWidth * eyeWidth);
-
-  // Vertical position: measure iris Y relative to stable canthi midpoint
-  // Normalizing by eyeWidth avoids dividing by eyelid distance which fluctuates wildly during blinks
   const midY = (a.y + b.y) / 2;
   const normY = 0.5 + ((irisY - midY) / eyeWidth) * 2.5;
 
-  return {
-    x: normX,
-    y: normY,
-    blinking: isBlinking,
-  };
+  return { x: normX, y: normY, blinking: isBlinking };
 }
