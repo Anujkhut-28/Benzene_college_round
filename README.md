@@ -109,12 +109,6 @@ Everything else keeps working if there is no camera or permission is denied — 
 
 The tracker uses MediaPipe Face Landmarker in the browser; no video leaves the machine.
 
-### Safety
-
-- Destructive clicks are blocked and answered with *"say confirm to activate this"*.
-- Every voice command still passes through the same policy gates as before: it must be addressed to
-  the browser, confident, complete, and non-destructive.
-
 ## What you can say
 
 ### Pointing at things — the most reliable way to click
