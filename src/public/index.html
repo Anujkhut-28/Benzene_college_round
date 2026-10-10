@@ -196,7 +196,7 @@
           <div class="full row">
             <label><input type="checkbox" id="headmirror" checked /> Mirror</label>
             <label><input type="checkbox" id="showvideo" checked /> Show video</label>
-            <label><input type="checkbox" id="headsnap" checked /> Snap to elements</label>
+            <label><input type="checkbox" id="headsnap" /> Snap to elements</label>
           </div>
         </div>
                <p class="small" style="margin:12px 0 0">Turn your head to steer the pointer. It snaps to the nearest link or button, so rough aim is enough. Pinch thumb and index finger to click. Risky buttons still need a spoken “confirm”. Eye modes are experimental.</p>
@@ -452,6 +452,7 @@ import { HeadTracker } from "/head-tracker.js";
       if (a.click) send({ type: "pointer", x: a.click.x, y: a.click.y, click: true, snap: $("headsnap").checked });
     },
   });
+  window.tracker = tracker;
 
   $("headtoggle").onclick = async () => {
     if (tracker.running) { tracker.stop(); return; }

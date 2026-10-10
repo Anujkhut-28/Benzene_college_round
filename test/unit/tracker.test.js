@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { HeadTracker } from "../../src/public/head-tracker.js";
+import { HeadTracker, OneEuro, applySmoothDeadzone, trimmedMean } from "../../src/public/head-tracker.js";
 
 function makeFace({ noseX = 0.5, noseY = 0.5, cheekL = 0.35, cheekR = 0.65 } = {}) {
   const marks = new Array(478).fill(null).map(() => ({ x: 0.5, y: 0.5, z: 0 }));
@@ -105,4 +105,143 @@ test("eye tracker: blink maintains stable gaze without exploding", () => {
 
   const blinkingGaze = tracker.compute(makeFaceWithEyes({ irisOffsetDx: 0.01, lidClosed: true }));
   assert.ok(Math.abs(blinkingGaze.y - openGaze.y) < 0.05);
+});
+
+test("smooth deadzone: provides continuous C0 transition with no edge jumps", () => {
+  const dz = 0.01;
+  // Inside deadzone -> strictly center
+  assert.equal(applySmoothDeadzone(0.500, 0.5, dz), 0.5);
+  assert.equal(applySmoothDeadzone(0.505, 0.5, dz), 0.5);
+  assert.equal(applySmoothDeadzone(0.495, 0.5, dz), 0.5);
+
+  // Exact boundary -> continuous 0.5
+  assert.equal(applySmoothDeadzone(0.510, 0.5, dz), 0.5);
+
+  // Just outside boundary -> smooth small delta, no discontinuous jump
+  const justOutside = applySmoothDeadzone(0.511, 0.5, dz);
+  assert.ok(justOutside > 0.5);
+  assert.ok(justOutside - 0.5 < 0.005, "No boundary cliff");
+
+  // Far outside -> scales smoothly toward full range
+  const far = applySmoothDeadzone(1.0, 0.5, dz);
+  assert.equal(far, 1.0);
+});
+
+test("trimmedMean: eliminates extreme outliers during calibration", () => {
+  // 5 frames with 1 extreme twitch at the end
+  const samples = [0.01, 0.01, 0.02, 0.01, 0.80];
+  const tm = trimmedMean(samples, 0.2); // discards min (0.01) and max (0.80)
+  assert.ok(tm < 0.03, `Expected trimmed mean < 0.03, got ${tm}`);
+});
+
+test("pipeline: holding head still for several seconds keeps cursor rock-solid", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1 });
+  tracker.processFrame(makeFace(), 1000); // calibrate
+
+  let maxDriftX = 0;
+  let maxDriftY = 0;
+  // Simulate 90 frames (3 seconds at 30 fps) with realistic resting webcam sensor noise
+  for (let i = 1; i <= 90; i++) {
+    const jitter = (Math.sin(i) * 0.0004);
+    const res = tracker.processFrame(makeFace({ noseX: 0.5 + jitter, noseY: 0.5 + jitter }), 1000 + i * 33);
+    maxDriftX = Math.max(maxDriftX, Math.abs(res.point.x - 0.5));
+    maxDriftY = Math.max(maxDriftY, Math.abs(res.point.y - 0.5));
+  }
+  // Deadzone and OneEuro filter suppress micro-jitter completely
+  assert.ok(maxDriftX < 0.002, `Max X drift was ${maxDriftX}`);
+  assert.ok(maxDriftY < 0.002, `Max Y drift was ${maxDriftY}`);
+});
+
+test("pipeline: fast intentional movement tracks responsively", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1, mirror: false });
+  tracker.processFrame(makeFace(), 1000); // calibrate
+
+  // Move right over 150ms
+  let finalPoint = null;
+  for (let i = 1; i <= 5; i++) {
+    const r = tracker.processFrame(makeFace({ noseX: 0.5 + i * 0.02 }), 1000 + i * 30);
+    finalPoint = r.point;
+  }
+  assert.ok(finalPoint.x > 0.65, "Fast movement responds promptly");
+});
+
+test("pipeline: single-frame tracking glitch is clamped", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1 });
+  tracker.processFrame(makeFace(), 1000); // calibrate
+  tracker.processFrame(makeFace(), 1033);
+
+  // Single glitch frame jumps wildly
+  const glitch = tracker.processFrame(makeFace({ noseX: 0.1, noseY: 0.9 }), 1066);
+  // Cursor should NOT jump to corner in one frame
+  assert.ok(Math.abs(glitch.point.x - 0.5) < 0.15, "Glitch X clamped");
+  assert.ok(Math.abs(glitch.point.y - 0.5) < 0.15, "Glitch Y clamped");
+
+  // Next normal frame resumes smoothly
+  const normal = tracker.processFrame(makeFace(), 1099);
+  assert.ok(Math.abs(normal.point.x - 0.5) < 0.05);
+});
+
+test("pipeline: face loss freezes cursor and reacquisition restores smoothly", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1, mirror: false });
+  tracker.processFrame(makeFace(), 1000);
+  // Move to a distinct position
+  for (let i = 1; i <= 5; i++) {
+    tracker.processFrame(makeFace({ noseX: 0.54 }), 1000 + i * 33);
+  }
+  const frozenX = tracker.point.x;
+  assert.ok(frozenX > 0.55);
+
+  // Face lost for 3 frames (user looked away / obscured)
+  const lost1 = tracker.processFrame(null, 1200);
+  assert.equal(lost1.face, false);
+  assert.equal(tracker.point.x, frozenX, "Cursor freezes at last position when face lost");
+
+  tracker.processFrame(null, 1233);
+  tracker.processFrame(null, 1266);
+  assert.equal(tracker.point.x, frozenX);
+
+  // Face returns: reacquisition frame warms up without leaping across screen
+  const reac1 = tracker.processFrame(makeFace({ noseX: 0.54 }), 1300);
+  assert.equal(reac1.face, true);
+  assert.ok(Math.abs(tracker.point.x - frozenX) < 0.02, "No jump on reacquisition");
+});
+
+test("pipeline: variable frame rates behave consistently", () => {
+  const tracker60 = new HeadTracker({});
+  tracker60.update({ mode: "head", calibrationFrames: 1 });
+  tracker60.processFrame(makeFace(), 1000);
+
+  const tracker30 = new HeadTracker({});
+  tracker30.update({ mode: "head", calibrationFrames: 1 });
+  tracker30.processFrame(makeFace(), 1000);
+
+  // Step at 60 fps for 100ms
+  let p60 = null;
+  for (let i = 1; i <= 6; i++) {
+    p60 = tracker60.processFrame(makeFace({ noseX: 0.52 }), 1000 + i * 16.6).point;
+  }
+
+  // Step at 30 fps for 100ms
+  let p30 = null;
+  for (let i = 1; i <= 3; i++) {
+    p30 = tracker30.processFrame(makeFace({ noseX: 0.52 }), 1000 + i * 33.3).point;
+  }
+
+  // Both should reach comparable filtered positions
+  assert.ok(Math.abs(p60.x - p30.x) < 0.08, `60fps (${p60.x}) and 30fps (${p30.x}) agree`);
+});
+
+test("pipeline: diagnostics exposes tracking state", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1 });
+  tracker.processFrame(makeFace(), 1000);
+  const diag = tracker.getDiagnostics();
+  assert.equal(typeof diag.calibrating, "boolean");
+  assert.ok(diag.baseline);
+  assert.equal(typeof diag.filteredPoint.x, "number");
+  assert.equal(typeof diag.filter.x, "number");
 });

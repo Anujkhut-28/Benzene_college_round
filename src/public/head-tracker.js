@@ -11,23 +11,23 @@ const DEFAULTS = {
   enabled: false,
   mode: "head", // "head" (recommended) | "blend" (experimental) | "eye" (experimental)
   sensitivity: 1.0,
-  // head mode
-  headMinCutoff: 1.0,
-  headBeta: 4,
-  headHold: 0.004,
+  sensitivityX: 1.0,
+  sensitivityY: 1.0,
+  // head mode One Euro filter parameters (well-damped at rest, responsive on movement)
+  headMinCutoff: 0.8,
+  headBeta: 0.08,
   // eye / blend modes
-  minCutoff: 0.25,
-  beta: 0.7,
-  holdRadius: 0.008,
+  minCutoff: 0.35,
+  beta: 0.05,
   eyeMedian: 1, // start() raises this to 5
-  margin: 0.05,
-  deadzone: 0.003,
+  margin: 0.04,
+  deadzone: 0.008, // smooth dead-zone to suppress resting head micro-tremor
   mirror: true,
   showVideo: true,
   clickMode: "pinch",
   pinchOn: 0.25,
   pinchOff: 0.35,
-  calibrationFrames: 1, // start() raises this to 20
+  calibrationFrames: 1, // start() raises this to 15
   blinkHoldMs: 150,
 };
 
@@ -42,8 +42,8 @@ const EYE_GAIN_Y = 8.5;
 const HEAD_GAIN_X = 5.0;
 const HEAD_GAIN_Y = 6.0;
 
-/** One Euro filter: adaptive low-pass, steady at rest, responsive on fast moves. */
-class OneEuro {
+/** One Euro filter: adaptive low-pass filter, rock-steady at rest, low-latency on fast moves. */
+export class OneEuro {
   constructor() {
     this.reset();
   }
@@ -56,23 +56,55 @@ class OneEuro {
     const tau = 1 / (2 * Math.PI * cutoff);
     return 1 / (1 + tau / dt);
   }
-  filter(v, tMs, minCutoff, beta) {
-    if (this.x === null) {
+  filter(v, tMs, minCutoff = 0.8, beta = 0.08, dcutoff = 1.0) {
+    if (this.x === null || !Number.isFinite(this.x)) {
       this.x = v;
+      this.dx = 0;
       this.t = tMs;
       return v;
     }
-    const dt = Math.max(1e-3, (tMs - this.t) / 1000);
+    const rawDt = (tMs - this.t) / 1000;
+    if (rawDt <= 0) return this.x;
+    // If a large pause happened (> 250ms), recover smoothly without derivative spike
+    if (rawDt > 0.25) {
+      this.dx = 0;
+      this.t = tMs;
+      this.x = this.x + (v - this.x) * 0.5;
+      return this.x;
+    }
+    const dt = Math.max(1e-3, Math.min(0.1, rawDt));
     this.t = tMs;
     const rawDx = (v - this.x) / dt;
-    this.dx += OneEuro.alpha(1, dt) * (rawDx - this.dx);
+    this.dx += OneEuro.alpha(dcutoff, dt) * (rawDx - this.dx);
     const cutoff = minCutoff + beta * Math.abs(this.dx);
     this.x += OneEuro.alpha(cutoff, dt) * (v - this.x);
     return this.x;
   }
 }
 
-const newCal = () => ({ n: 0, yaw: 0, pitch: 0, ex: 0, ey: 0, en: 0 });
+/** Smooth continuous dead-zone: zero jump across the boundary. */
+export function applySmoothDeadzone(val, center = 0.5, deadzone = 0.005) {
+  if (deadzone <= 0) return val;
+  const delta = val - center;
+  const absDelta = Math.abs(delta);
+  if (absDelta <= deadzone) return center;
+  const maxRange = delta > 0 ? (1 - center) : center;
+  const usableRange = Math.max(1e-4, maxRange - deadzone);
+  const normalizedDelta = (absDelta - deadzone) / usableRange;
+  return center + Math.sign(delta) * Math.min(maxRange, normalizedDelta * maxRange);
+}
+
+/** Robust trimmed mean: discards top and bottom extremes to resist calibration twitches. */
+export function trimmedMean(arr, trimFraction = 0.2) {
+  if (!arr || !arr.length) return 0;
+  if (arr.length <= 2) return arr.reduce((a, b) => a + b, 0) / arr.length;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const trimCount = Math.floor(sorted.length * trimFraction);
+  const kept = sorted.slice(trimCount, sorted.length - trimCount);
+  return kept.reduce((a, b) => a + b, 0) / (kept.length || 1);
+}
+
+const newCal = () => ({ n: 0, yaws: [], pitches: [], faceWidths: [], ex: [], ey: [] });
 
 export class HeadTracker {
   constructor({ video, canvas, onStatus, onPoint, onActivate }) {
@@ -103,6 +135,11 @@ export class HeadTracker {
     this._pinch = false;
     this.pinched = false;
     this.pinchWasDown = false;
+    this._lostFrames = 0;
+    this._reacquireFrames = 0;
+    this._hasValidPoint = false;
+    this._prevRawPoint = null;
+    this._prevPointTime = 0;
   }
 
   get config() {
@@ -157,7 +194,7 @@ export class HeadTracker {
 
     this.running = true;
     this.cfg.enabled = true;
-    this.cfg.calibrationFrames = Math.max(this.cfg.calibrationFrames, 20);
+    this.cfg.calibrationFrames = Math.max(this.cfg.calibrationFrames, 15);
     this.cfg.eyeMedian = Math.max(this.cfg.eyeMedian, 5);
     this.recalibrate();
     this.onStatus({ state: "running" });
@@ -247,6 +284,109 @@ export class HeadTracker {
     this.fy.reset();
     this.smooth = { x: 0.5, y: 0.5 };
     this.point = { x: 0.5, y: 0.5 };
+    this._lostFrames = 0;
+    this._reacquireFrames = 0;
+    this._hasValidPoint = false;
+    this._prevRawPoint = null;
+    this._prevPointTime = 0;
+  }
+
+  processFrame(marks, ts = performance.now()) {
+    if (!marks) {
+      this._lostFrames++;
+      this._reacquireFrames = 0;
+      this._prevRawPoint = null;
+      return {
+        point: { ...this.point },
+        face: false,
+        lost: true,
+        calibrating: this.calibrating,
+      };
+    }
+
+    const p = this.compute(marks);
+    if (!p) {
+      this._lostFrames++;
+      this._reacquireFrames = 0;
+      return {
+        point: { ...this.point },
+        face: false,
+        lost: true,
+        calibrating: this.calibrating,
+      };
+    }
+
+    if (this.calibrating) {
+      this._prevRawPoint = { ...p };
+      this._prevPointTime = ts;
+      this.smooth = { ...p };
+      this.point = { ...p };
+      return {
+        point: { ...this.point },
+        face: true,
+        calibrating: true,
+      };
+    }
+
+    // Reacquisition smoothing after face tracking was lost
+    if (this._lostFrames > 0) {
+      this._reacquireFrames++;
+      if (this._hasValidPoint) {
+        this.fx.x = this.point.x;
+        this.fy.x = this.point.y;
+        this.fx.dx = 0;
+        this.fy.dx = 0;
+        this.fx.t = ts;
+        this.fy.t = ts;
+      }
+      if (this._reacquireFrames < 2) {
+        this._prevRawPoint = { ...p };
+        this._prevPointTime = ts;
+        return {
+          point: { ...this.point },
+          face: true,
+          reacquiring: true,
+          calibrating: false,
+        };
+      }
+      this._lostFrames = 0;
+      this._reacquireFrames = 0;
+    }
+
+    // Outlier rejection: clamp implausible single-frame jumps
+    const dtSec = this._prevPointTime > 0 ? Math.max(1e-3, (ts - this._prevPointTime) / 1000) : 0.033;
+    this._prevPointTime = ts;
+
+    const rawTarget = { x: p.x, y: p.y };
+    if (this._prevRawPoint && this._hasValidPoint) {
+      const stepX = rawTarget.x - this._prevRawPoint.x;
+      const stepY = rawTarget.y - this._prevRawPoint.y;
+      const stepDist = Math.hypot(stepX, stepY);
+      const maxAllowed = Math.max(0.12, 4.5 * dtSec);
+      if (stepDist > maxAllowed) {
+        const scale = maxAllowed / stepDist;
+        rawTarget.x = this._prevRawPoint.x + stepX * scale;
+        rawTarget.y = this._prevRawPoint.y + stepY * scale;
+      }
+    }
+    this._prevRawPoint = { x: rawTarget.x, y: rawTarget.y };
+
+    const headOnly = this.cfg.mode === "head";
+    const minCutoff = headOnly ? this.cfg.headMinCutoff : this.cfg.minCutoff;
+    const beta = headOnly ? this.cfg.headBeta : this.cfg.beta;
+
+    const fx = clamp01(this.fx.filter(rawTarget.x, ts, minCutoff, beta));
+    const fy = clamp01(this.fy.filter(rawTarget.y, ts, minCutoff, beta));
+
+    this.smooth = { x: fx, y: fy };
+    this.point = { x: fx, y: fy };
+    this._hasValidPoint = true;
+
+    return {
+      point: { ...this.point },
+      face: true,
+      calibrating: false,
+    };
   }
 
   loop() {
@@ -270,35 +410,14 @@ export class HeadTracker {
       return;
     }
     const marks = res?.faceLandmarks?.[0];
-    if (!marks) {
-      this.fx.reset();
-      this.fy.reset();
-      this._eyeBuf = [];
+
+    const frameResult = this.processFrame(marks, ts);
+    if (!frameResult) return;
+
+    if (!frameResult.face) {
       this.onStatus({ state: "running", face: false });
       this.draw(null);
       return;
-    }
-
-    const p = this.compute(marks);
-    if (!p) return;
-
-    const headOnly = this.cfg.mode === "head";
-    const minCutoff = headOnly ? this.cfg.headMinCutoff : this.cfg.minCutoff;
-    const beta = headOnly ? this.cfg.headBeta : this.cfg.beta;
-    const hold = headOnly ? this.cfg.headHold : this.cfg.holdRadius;
-
-    this.smooth = {
-      x: this.fx.filter(p.x, ts, minCutoff, beta),
-      y: this.fy.filter(p.y, ts, minCutoff, beta),
-    };
-
-    // Leash: ignore wobble smaller than `hold`, then trail the target by that radius.
-    const dx = this.smooth.x - this.point.x;
-    const dy = this.smooth.y - this.point.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > hold) {
-      const k = (dist - hold) / dist;
-      this.point = { x: this.point.x + dx * k, y: this.point.y + dy * k };
     }
 
     this.draw(marks);
@@ -313,7 +432,12 @@ export class HeadTracker {
       this.onActivate({ click: { ...this.point }, pinch: true });
     }
     this.pinchWasDown = pinch;
-    this.onStatus({ state: "running", face: true, calibrating: this.calibrating, pinching: pinch });
+    this.onStatus({
+      state: "running",
+      face: true,
+      calibrating: this.calibrating,
+      pinching: pinch,
+    });
   }
 
   detectPinch(v) {
@@ -337,7 +461,8 @@ export class HeadTracker {
 
     const midX = (leftCheek.x + rightCheek.x) / 2;
     const midY = (leftCheek.y + rightCheek.y) / 2;
-    const cheekDist = Math.max(0.04, Math.abs(rightCheek.x - leftCheek.x));
+    // Euclidean cheek distance to resist head tilt
+    const cheekDist = Math.max(0.04, Math.hypot(rightCheek.x - leftCheek.x, rightCheek.y - leftCheek.y));
     const yaw = (nose.x - midX) / cheekDist;
     const pitch = (nose.y - midY) / cheekDist;
 
@@ -345,21 +470,29 @@ export class HeadTracker {
     const eye = needEye ? this.eyeSample(marks) : null;
 
     if (this.calibrating) {
-      // Average several frames so one glance or blink cannot define "center".
       const usable = !needEye || (eye && !eye.blinking);
       if (usable) {
         const c = this._cal;
         c.n += 1;
-        c.yaw += yaw;
-        c.pitch += pitch;
-        if (needEye) {
-          c.ex += eye.x;
-          c.ey += eye.y;
-          c.en += 1;
+        c.yaws.push(yaw);
+        c.pitches.push(pitch);
+        c.faceWidths.push(cheekDist);
+        if (needEye && eye) {
+          c.ex.push(eye.x);
+          c.ey.push(eye.y);
         }
         if (c.n >= this.cfg.calibrationFrames) {
-          this.baseline = { yaw: c.yaw / c.n, pitch: c.pitch / c.n };
-          if (c.en) this.eyeBase = { x: c.ex / c.en, y: c.ey / c.en };
+          this.baseline = {
+            yaw: trimmedMean(c.yaws, 0.2),
+            pitch: trimmedMean(c.pitches, 0.2),
+            faceWidth: trimmedMean(c.faceWidths, 0.2),
+          };
+          if (c.ex.length > 0) {
+            this.eyeBase = {
+              x: trimmedMean(c.ex, 0.2),
+              y: trimmedMean(c.ey, 0.2),
+            };
+          }
           this.calibrating = false;
         }
       }
@@ -383,19 +516,41 @@ export class HeadTracker {
       rawY = this.centered(pitch, "pitch");
     }
 
-    const s = this.cfg.sensitivity;
-    let x = 0.5 + (rawX - 0.5) * s;
-    let y = 0.5 + (rawY - 0.5) * s;
+    const sx = (this.cfg.sensitivityX ?? 1.0) * (this.cfg.sensitivity ?? 1.0);
+    const sy = (this.cfg.sensitivityY ?? 1.0) * (this.cfg.sensitivity ?? 1.0);
+    let x = 0.5 + (rawX - 0.5) * sx;
+    let y = 0.5 + (rawY - 0.5) * sy;
     if (this.cfg.mirror) x = 1 - x;
 
     const m = this.cfg.margin;
     x = clamp01((x - m) / (1 - 2 * m));
     y = clamp01((y - m) / (1 - 2 * m));
 
-    const d = this.cfg.deadzone;
-    if (Math.abs(x - 0.5) < d) x = 0.5;
-    if (Math.abs(y - 0.5) < d) y = 0.5;
+    const d = this.cfg.deadzone ?? 0;
+    x = applySmoothDeadzone(x, 0.5, d);
+    y = applySmoothDeadzone(y, 0.5, d);
     return { x: clamp01(x), y: clamp01(y) };
+  }
+
+  getDiagnostics() {
+    return {
+      running: this.running,
+      calibrating: this.calibrating,
+      mode: this.cfg.mode,
+      baseline: this.baseline ? { ...this.baseline } : null,
+      rawPoint: this._prevRawPoint ? { ...this._prevRawPoint } : null,
+      filteredPoint: { ...this.point },
+      lostFrames: this._lostFrames,
+      reacquireFrames: this._reacquireFrames,
+      hasValidPoint: this._hasValidPoint,
+      filter: {
+        x: this.fx.x,
+        y: this.fy.x,
+        dx: this.fx.dx,
+        dy: this.fy.dx,
+      },
+      config: { ...this.cfg },
+    };
   }
 
   centered(value, axis) {

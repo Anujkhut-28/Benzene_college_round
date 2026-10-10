@@ -51,8 +51,8 @@ export function installOverlay() {
     const SNAP_SEL =
     "a[href],button,input:not([type=hidden]),textarea,select,summary,[role=button],[role=link],[role=tab]," +
     "[role=menuitem],[role=checkbox],[role=radio],[role=switch],[role=searchbox],[role=combobox],[role=textbox],[onclick]";
-  const SNAP_RADIUS = 140; // px: farther than this from every element, the cursor stays free
-  const SNAP_STICKY = 24; // px: the current target is kept unless another is this much closer
+  const SNAP_RADIUS = 28; // px: farther than this from every element, the cursor stays free
+  const SNAP_STICKY = 12; // px: the current target is kept unless another is this much closer
   let snapItems = [];
   let snapAt = 0;
   let snapId = null;
