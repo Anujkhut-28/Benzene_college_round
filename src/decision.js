@@ -77,6 +77,9 @@ export async function decideBatch(state, questions) {
   const groups = [];
   for (const [name, q] of Object.entries(questions)) {
     const n = q.type === "choice" ? Object.keys(q.criteria || {}).length : q.type === "score" ? (q.criteria?.length || 0) : 2;
+    // A choice question with fewer than two options is not a question; node-llama-cpp throws on
+    // it, and that throw is fatal to the whole session.
+    if (q.type === "choice" && n < 2) continue;
     if (n <= MAX_CHUNK) groups.push([{ ...q, name }]);
     else {
       const keys = Object.keys(q.criteria);

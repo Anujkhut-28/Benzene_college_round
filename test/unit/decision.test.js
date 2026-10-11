@@ -4,6 +4,39 @@ import { choice, noul, score } from "@typesafe-ai/sdk";
 import { toDecisionQuestion, toAnswers } from "../../src/decision.js";
 import { ordinalFromTranscript } from "../../src/local-jev.js";
 import { findModel } from "../../src/model-path.js";
+import { buildRequest } from "../../src/jev.js";
+
+test("no question is ever asked with fewer than two options", () => {
+  // node-llama-cpp throws on a one-option choice, and that throw is fatal to the session.
+  // about:blank at startup has no clickable elements, so `target` had only "none".
+  const snapshots = [
+    { url: "about:blank", title: "", site: "blank", elements: [] },
+    { url: "about:blank", title: "", site: "blank" },
+    { url: "https://example.com", site: "example_com", elements: [{ id: "e01", role: "link", text: "a" }] },
+    {
+      url: "https://example.com",
+      site: "example_com",
+      elements: [
+        { id: "e01", role: "link", text: "a" },
+        { id: "e02", role: "button", text: "b" },
+      ],
+    },
+  ];
+  for (const snapshot of snapshots) {
+    const { questions } = buildRequest({ transcript: "what is this", snapshot, tabs: [], context: null });
+    for (const [name, q] of Object.entries(questions)) {
+      if (q.type !== "choice") continue;
+      const n = Object.keys(q.criteria || {}).length;
+      assert.ok(n >= 2, `${name} had ${n} option(s) for ${JSON.stringify(snapshot.url)}`);
+    }
+  }
+});
+
+test("a page with nothing clickable does not ask for a target at all", () => {
+  const { questions } = buildRequest({ transcript: "hello", snapshot: { url: "about:blank", site: "blank", elements: [] }, tabs: [], context: null });
+  assert.equal(questions.target, undefined);
+  assert.ok(questions.intent, "the other questions are still asked");
+});
 
 test("choice questions convert with their criteria intact", () => {
   const q = choice("Which action?", { navigate_url: { what: "Open a site" }, none: null });

@@ -126,6 +126,12 @@ export async function startServer(opts = {}) {
   };
 
   controller.on("transcript", (p) => broadcast("transcript", p));
+  // Without this, emitting "error" is itself an unhandled throw and one bad decision kills the
+  // whole browser session.
+  controller.on("error", (err) => {
+    console.error("controller error:", err?.message || err);
+    broadcast("error", { message: String(err?.message || err) });
+  });
   controller.on("decision", (p) => {
     evaluation.recordDecision(p).then((s) => broadcast("evaluation", s)).catch(() => {});
     broadcast("decision", p);

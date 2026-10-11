@@ -135,13 +135,8 @@ export function buildRequest({ transcript, snapshot, pendingConfirmation = null,
   if (pendingConfirmation) state.pending_confirmation = pendingConfirmation;
   if (tabs && tabs.length > 1) state.open_tabs = tabs.length;
 
-  const targetCriteria = {};
-  for (const el of elements) targetCriteria[el.id] = null;
-  targetCriteria.none = "No element on this page is referred to";
-
   const questions = {
     intent: choice(QUESTIONS.intent.instructions, QUESTIONS.intent.criteria),
-    target: choice(QUESTIONS.target.instructions, targetCriteria),
     site: choice(QUESTIONS.site.instructions, QUESTIONS.site.criteria),
     complete: noul(QUESTIONS.complete.instructions, QUESTIONS.complete.criteria),
     is_command: noul(QUESTIONS.is_command.instructions, QUESTIONS.is_command.criteria),
@@ -149,6 +144,14 @@ export function buildRequest({ transcript, snapshot, pendingConfirmation = null,
     scroll_amount: score(QUESTIONS.scroll_amount.instructions, QUESTIONS.scroll_amount.criteria),
     tab_direction: choice(QUESTIONS.tab_direction.instructions, QUESTIONS.tab_direction.criteria),
   };
+  // A page with nothing clickable (about:blank at startup) would leave `target` with the single
+  // "none" option, and node-llama-cpp refuses a choice question with fewer than two options.
+  if (elements.length) {
+    const targetCriteria = {};
+    for (const el of elements) targetCriteria[el.id] = null;
+    targetCriteria.none = "No element on this page is referred to";
+    questions.target = choice(QUESTIONS.target.instructions, targetCriteria);
+  }
   if (ctx?.recent_actions?.length) {
     questions.is_correction = noul(QUESTIONS.is_correction.instructions, QUESTIONS.is_correction.criteria);
   }
