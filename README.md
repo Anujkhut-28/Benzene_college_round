@@ -1,5 +1,9 @@
 # HandsFree — hands-free web browsing
 
+[![Node](https://img.shields.io/badge/node-%3E%3D20-5FA04E.svg)](https://nodejs.org)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#quick-start)
+[![No API key needed](https://img.shields.io/badge/API%20key-not%20required-success.svg)](#using-the-typesafe-api-instead)
+
 Accessibility-focused browsing for people with motor impairments. Control a real browser with
 **voice commands** and **webcam head tracking** — no mouse, no keyboard, no special hardware.
 
@@ -21,6 +25,16 @@ Accessibility-focused browsing for people with motor impairments. Control a real
 > Web Speech API, which in Chrome and Edge sends your audio to Google's speech service. Everything
 > else — screenshots, page contents, the model — stays on the machine. Using a local recognizer is
 > the one part not yet built.
+
+## Demo
+
+Saying **"play the second video"** while YouTube Shorts is on screen. The transcript streams in on
+the right; the chosen video opens on the left. No mouse, no keyboard.
+
+![The HandsFree control page on the right showing the spoken command "play the second video", beside a YouTube Shorts grid on the left where the second video is playing, with a "play: 16:50" toast over it](assets/demo.png)
+
+The control page also shows what the decision cost: model, latency, calls, and **$0.000000** —
+the model is embedded, so every command is free.
 
 ## Quick start
 
