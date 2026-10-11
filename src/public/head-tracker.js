@@ -9,7 +9,7 @@
 
 const DEFAULTS = {
   enabled: false,
-  mode: "head", // "head" (recommended) | "blend" (experimental) | "eye" (experimental)
+  mode: "head", // "head" | "palm" (hand) | "blend" (experimental) | "eye" (experimental)
   sensitivity: 1.0,
   // head mode
   headMinCutoff: 1.0,
@@ -19,6 +19,11 @@ const DEFAULTS = {
   minCutoff: 0.25,
   beta: 0.7,
   holdRadius: 0.008,
+  // palm mode: hand landmarks are steadier than the face but twitchier than the head frame,
+  // so they sit between the two filter settings.
+  palmMinCutoff: 0.8,
+  palmBeta: 2,
+  palmHold: 0.002,
   eyeMedian: 1, // start() raises this to 5
   margin: 0.05,
   deadzone: 0.003,
@@ -37,10 +42,27 @@ const NOSE = 1;
 const L_CHEEK = 234;
 const R_CHEEK = 454;
 
+// Wrist plus the four finger knuckles: the centroid is the centre of the palm and stays
+// steady while the fingers open, close or curl, unlike any single fingertip.
+const PALM = [0, 5, 9, 13, 17];
+
+// Standard MediaPipe hand topology, used only to draw the skeleton overlay.
+const HAND_EDGES = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+];
+
 const EYE_GAIN_X = 6.5;
 const EYE_GAIN_Y = 8.5;
 const HEAD_GAIN_X = 5.0;
 const HEAD_GAIN_Y = 6.0;
+// Palm mode maps the palm position across the frame directly, so the gain only has to
+// stretch a comfortable hand range over the full screen.
+const PALM_GAIN = 1.6;
 
 /** One Euro filter: adaptive low-pass, steady at rest, responsive on fast moves. */
 class OneEuro {
@@ -114,33 +136,43 @@ export class HeadTracker {
     return this.cfg;
   }
 
+  /** Palm mode reads the hand model instead of the face model, so it skips the face download. */
+  get palmMode() {
+    return this.cfg.mode === "palm";
+  }
+
   async start() {
     if (this.running) return { ok: true };
     this.onStatus({ state: "starting" });
-    try {
-      const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14");
-      const fileset = await vision.FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm",
-      );
-      const faceConfig = {
-        baseOptions: {
-          modelAssetPath:
-            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-          delegate: "GPU",
-        },
-        runningMode: "VIDEO",
-        numFaces: 1,
-        outputFaceBlendshapes: false,
-      };
+    if (this.palmMode) {
+      const hands = await this.loadHands();
+      if (!hands.ok) return hands;
+    } else {
       try {
-        this.landmarker = await vision.FaceLandmarker.createFromOptions(fileset, faceConfig);
-      } catch {
-        delete faceConfig.baseOptions.delegate;
-        this.landmarker = await vision.FaceLandmarker.createFromOptions(fileset, faceConfig);
+        const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14");
+        const fileset = await vision.FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm",
+        );
+        const faceConfig = {
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+            delegate: "GPU",
+          },
+          runningMode: "VIDEO",
+          numFaces: 1,
+          outputFaceBlendshapes: false,
+        };
+        try {
+          this.landmarker = await vision.FaceLandmarker.createFromOptions(fileset, faceConfig);
+        } catch {
+          delete faceConfig.baseOptions.delegate;
+          this.landmarker = await vision.FaceLandmarker.createFromOptions(fileset, faceConfig);
+        }
+      } catch (err) {
+        this.onStatus({ state: "error", message: `head model unavailable: ${err.message}` });
+        return { ok: false, error: String(err.message || err) };
       }
-    } catch (err) {
-      this.onStatus({ state: "error", message: `head model unavailable: ${err.message}` });
-      return { ok: false, error: String(err.message || err) };
     }
 
     try {
@@ -253,7 +285,13 @@ export class HeadTracker {
     if (!this.running) return;
     this.raf = requestAnimationFrame(() => this.loop());
     const v = this.video;
-    if (!v || v.readyState < 2 || !this.landmarker) return;
+    if (!v || v.readyState < 2) return;
+    if (this.palmMode) {
+      if (!this.handLandmarker) return;
+      this.loopPalm(v);
+      return;
+    }
+    if (!this.landmarker) return;
 
     // Camera ~30 fps, rAF at display rate: skip duplicate frames.
     if (v.currentTime === this._lastVideoTime) return;
@@ -314,6 +352,99 @@ export class HeadTracker {
     }
     this.pinchWasDown = pinch;
     this.onStatus({ state: "running", face: true, calibrating: this.calibrating, pinching: pinch });
+  }
+
+  /**
+   * One frame of palm tracking: the palm centroid steers the cursor, a pinch clicks.
+   * Runs the hand model every frame here (unlike the pinch-only path) because it is the
+   * sole source of pointer position.
+   */
+  loopPalm(v) {
+    const now = performance.now();
+    const ts = now <= (this._lastHandTime || 0) ? (this._lastHandTime || 0) + 1 : now;
+    this._lastHandTime = ts;
+
+    let res;
+    try {
+      res = this.handLandmarker.detectForVideo(v, ts);
+    } catch {
+      return;
+    }
+    const hand = res?.landmarks?.[0];
+    if (!hand) {
+      // Hold the last point rather than snapping to centre when the hand leaves frame.
+      this.onStatus({ state: "running", face: false, hand: false });
+      this.draw(null, true);
+      return;
+    }
+
+    const p = this.computePalm(hand);
+    if (!p) return;
+
+    this.smooth = {
+      x: this.fx.filter(p.x, ts, this.cfg.palmMinCutoff, this.cfg.palmBeta),
+      y: this.fy.filter(p.y, ts, this.cfg.palmMinCutoff, this.cfg.palmBeta),
+    };
+
+    // Same leash as the head path: ignore micro-jitter, then trail the target.
+    const dx = this.smooth.x - this.point.x;
+    const dy = this.smooth.y - this.point.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > this.cfg.palmHold) {
+      const k = (dist - this.cfg.palmHold) / dist;
+      this.point = { x: this.point.x + dx * k, y: this.point.y + dy * k };
+    }
+
+    this.draw(hand, true);
+    this.onPoint(this.point);
+
+    const pinch = this.cfg.clickMode === "pinch" ? this.pinching(hand) : false;
+    if (pinch && !this.pinchWasDown) {
+      this.onActivate({ click: { ...this.point }, pinch: true });
+    }
+    this.pinchWasDown = pinch;
+    this.onStatus({
+      state: "running",
+      face: true,
+      hand: true,
+      calibrating: this.calibrating,
+      pinching: pinch,
+    });
+  }
+
+  /**
+   * Palm centroid (wrist + four knuckles) mapped to screen space. Unlike the head and eye
+   * paths this is absolute rather than baseline-relative: a hand cannot look "away from
+   * centre", so there is nothing for re-centring to correct. The frame's usable hand area
+   * is inset from the edges, so recentring would only add drift.
+   */
+  computePalm(hand) {
+    if (!hand || hand.length < 21) return null;
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (const i of PALM) {
+      const p = hand[i];
+      if (!p) continue;
+      sx += p.x;
+      sy += p.y;
+      n++;
+    }
+    if (n < PALM.length) return null;
+
+    const s = this.cfg.sensitivity;
+    let x = 0.5 + (sx / n - 0.5) * PALM_GAIN * s;
+    let y = 0.5 + (sy / n - 0.5) * PALM_GAIN * s;
+    if (this.cfg.mirror) x = 1 - x;
+
+    const m = this.cfg.margin;
+    x = clamp01((x - m) / (1 - 2 * m));
+    y = clamp01((y - m) / (1 - 2 * m));
+
+    const d = this.cfg.deadzone;
+    if (Math.abs(x - 0.5) < d) x = 0.5;
+    if (Math.abs(y - 0.5) < d) y = 0.5;
+    return { x: clamp01(x), y: clamp01(y) };
   }
 
   detectPinch(v) {
@@ -450,7 +581,7 @@ export class HeadTracker {
     return gaze;
   }
 
-  draw(marks) {
+  draw(marks, isHand = false) {
     const c = this.canvas;
     if (!c) return;
     const w = (c.width = this.video?.clientWidth || 320);
@@ -458,10 +589,27 @@ export class HeadTracker {
     const ctx = c.getContext("2d");
     ctx.clearRect(0, 0, w, h);
     if (marks && this.cfg.showVideo) {
-      const pts = [marks[NOSE], marks[L_CHEEK], marks[R_CHEEK]];
-      if (this.cfg.mode !== "head" && marks.length >= 478) {
-        for (const i of [468, 473]) {
-          if (marks[i]) pts.push(marks[i]);
+      let pts;
+      if (isHand) {
+        // All 21 points plus the palm skeleton, so the user can aim with the outline.
+        pts = marks;
+        ctx.strokeStyle = "rgba(120,220,255,0.5)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (const [a, b] of HAND_EDGES) {
+          const p = marks[a];
+          const q = marks[b];
+          if (!p || !q) continue;
+          ctx.moveTo((this.cfg.mirror ? 1 - p.x : p.x) * w, p.y * h);
+          ctx.lineTo((this.cfg.mirror ? 1 - q.x : q.x) * w, q.y * h);
+        }
+        ctx.stroke();
+      } else {
+        pts = [marks[NOSE], marks[L_CHEEK], marks[R_CHEEK]];
+        if (this.cfg.mode !== "head" && marks.length >= 478) {
+          for (const i of [468, 473]) {
+            if (marks[i]) pts.push(marks[i]);
+          }
         }
       }
       for (const m of pts) {

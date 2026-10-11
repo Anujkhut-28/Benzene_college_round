@@ -104,6 +104,7 @@ re-opening the pinch fires a new click, so you can click repeatedly by pinching 
 | **Tracking** `eyes` | natural gaze (eyes + head orientation) — most precise |
 | **Tracking** `eyes + head` | averages gaze and head pose — steadier, recommended if you cannot hold still |
 | **Tracking** `head only` | coarse; for people who cannot move their eyes comfortably |
+| **Tracking** `palm` | move your open hand: the centre of your palm (wrist plus knuckles) drives the cursor. Absolute, so it needs no re-centring — hold the palm where you want the pointer. Loads the hand model only, not the face model |
 | **Sensitivity** | gain. Turn up if the cursor will not reach the screen edges, down if it is too twitchy |
 | **mirror** | flip left/right — turn off if the cursor moves the wrong way |
 | **show video** | camera preview with the tracked points drawn on it |

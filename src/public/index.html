@@ -199,6 +199,7 @@
           <label for="headmode">Tracking</label>
          <select id="headmode">
             <option value="head">Head pointing (recommended)</option>
+            <option value="palm">Palm cursor (hand)</option>
             <option value="blend">Eyes + head (experimental)</option>
             <option value="eye">Eyes only (experimental)</option>
           </select>
@@ -215,7 +216,7 @@
             <label><input type="checkbox" id="headsnap" checked /> Snap to elements</label>
           </div>
         </div>
-               <p class="small" style="margin:12px 0 0">Turn your head to steer the pointer. It snaps to the nearest link or button, so rough aim is enough. Pinch thumb and index finger to click. Risky buttons still need a spoken “confirm”. Eye modes are experimental.</p>
+               <p class="small" style="margin:12px 0 0">Turn your head to steer the pointer, or pick <strong>Palm cursor</strong> and move your open hand: the centre of your palm drives the pointer. It snaps to the nearest link or button, so rough aim is enough. Pinch thumb and index finger to click. Risky buttons still need a spoken “confirm”. Eye modes are experimental.</p>
       </details>
     </section>
 
@@ -595,7 +596,9 @@ import { HeadTracker } from "/head-tracker.js";
     canvas: $("headcanvas"),
         onStatus: (s) => {
       const el = $("headstate");
-      const base = s.state === "running" ? (s.face === false ? "no face" : s.calibrating ? "calibrating, look straight ahead" : "tracking") : s.state;
+      const palm = tracker.cfg.mode === "palm";
+      const missing = palm ? (s.hand === false ? "no hand" : null) : s.face === false ? "no face" : null;
+      const base = s.state === "running" ? (missing || (s.calibrating ? (palm ? "calibrating, hold palm up" : "calibrating, look straight ahead") : "tracking")) : s.state;
       el.textContent = s.pinching ? "pinch — click!" : base;
       el.style.color = s.state === "error" ? "var(--red)" : s.pinching ? "var(--accent)" : s.state === "running" ? "var(--green)" : "var(--muted)";
       if (s.message) $("headstate").title = s.message;
@@ -616,9 +619,13 @@ import { HeadTracker } from "/head-tracker.js";
     if (!r.ok) $("headstate").textContent = "unavailable";
   };
   $("headrecal").onclick = () => tracker.recalibrate();
-  $("headmode").onchange = (e) => {
-    tracker.update({ mode: e.target.value });
-    tracker.recalibrate(); // new mode => new neutral pose
+  $("headmode").onchange = async (e) => {
+    const mode = e.target.value;
+    tracker.update({ mode });
+    // Palm mode needs the hand model, not the face model. Load it before switching so the
+    // first frame after the change is already live, then re-centre for the new source.
+    if (mode === "palm") await tracker.loadHands();
+    tracker.recalibrate();
   };
   $("headclick").onchange = (e) => {
     tracker.update({ clickMode: e.target.value });
