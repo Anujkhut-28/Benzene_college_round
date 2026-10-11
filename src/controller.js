@@ -203,8 +203,18 @@ export class Controller extends EventEmitter {
         this._log("debug", `cancelled stale request for "${textAtRequest}"`);
         return;
       }
-      this._log("error", `Jev error: ${err.message || err}`);
-      this.emit("error", err);
+      // A missing or unloadable model is the most common setup problem, and the raw
+      // message is a long multi-line path dump. Say what to do instead.
+      const raw = String(err?.message || err);
+      if (/No decision model found|HANDSFREE_MODEL not found/.test(raw)) {
+        this._log("error", `no decision model — ${raw.split("\n")[0]}`);
+      } else {
+        this._log("error", `decision failed: ${raw.split("\n")[0]}`);
+      }
+      // Not "error": EventEmitter throws when an `error` event has no listener, which
+      // would take the whole server down over one failed decision. The log line above
+      // is the user-visible report.
+      this.emit("decisionError", err);
       return;
     }
     this.inflight = this.inflight.filter((r) => r !== req);

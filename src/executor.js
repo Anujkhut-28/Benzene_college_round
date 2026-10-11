@@ -36,17 +36,20 @@ export async function execute(action, browser) {
     case "navigate_url": {
       await browser.overlay("toast", `→ ${label}`);
       const host = new URL(action.url).hostname.replace(/^www\./, "");
+      // Each spoken navigation opens a NEW tab rather than replacing the current one.
+      // Reusing the tab made "go back" fail: repeated goto() calls collapse into a
+      // single history entry, so there was nothing to return to.
+      const target = await browser.context.newPage();
       try {
-        await page.goto(action.url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
+        await target.goto(action.url, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
       } catch (e) {
-        // Transient network error or a site that never fires load: retry once, then accept if the
-        // URL at least moved to the right host.
         await new Promise((r) => setTimeout(r, 500));
-        await page.goto(action.url, { waitUntil: "commit", timeout: NAV_TIMEOUT }).catch(() => {});
-        if (!page.url().includes(host)) throw e;
+        await target.goto(action.url, { waitUntil: "commit", timeout: NAV_TIMEOUT }).catch(() => {});
+        if (!target.url().includes(host)) throw e;
       }
-      await settle(page, 800);
-      return { ok: true, detail: page.url() };
+      await browser.setActive(target);
+      await settle(target, 800);
+      return { ok: true, detail: target.url() };
     }
 
     case "click_element": {
@@ -124,11 +127,23 @@ export async function execute(action, browser) {
       return { ok: true, detail: `scrollY=${await page.evaluate(() => Math.round(window.scrollY))}` };
     }
 
-    case "go_back":
+    case "go_back": {
       await browser.overlay("toast", "← back");
+      // Navigations open new tabs, so "back" means returning to the previous tab.
+      // Fall back to in-page history when only one tab is open (e.g. a link click).
+      const idx = browser.pages.indexOf(page);
+      if (browser.pages.length > 1) {
+        const prev = browser.pages[idx - 1] ?? browser.pages.filter((p) => p !== page).pop();
+        await page.close().catch(() => {});
+        if (prev && !prev.isClosed()) {
+          await browser.setActive(prev);
+          return { ok: true, detail: prev.url() };
+        }
+      }
       await page.goBack({ waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT }).catch(() => {});
       await settle(page, 800);
       return { ok: true, detail: page.url() };
+    }
 
     case "go_forward":
       await browser.overlay("toast", "→ forward");

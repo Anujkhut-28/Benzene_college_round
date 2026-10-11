@@ -30,18 +30,24 @@ function walk(dir, out = [], depth = 0) {
   return out;
 }
 
-/** Find a usable decision-model GGUF without requiring LM Studio to be running. */
-export function findModel() {
-  const explicit = process.env.HANDSFREE_MODEL;
+/**
+ * Find a usable decision-model GGUF without requiring LM Studio to be running.
+ * `roots` is injectable so the search order can be tested without a real model on disk.
+ */
+export function findModel({ roots: overrideRoots, env = process.env } = {}) {
+  const explicit = env.HANDSFREE_MODEL;
   if (explicit) {
     if (!fs.existsSync(explicit)) throw new Error(`HANDSFREE_MODEL not found: ${explicit}`);
     return explicit;
   }
 
-  const bundled = path.join(MODEL_DIR, MODEL_FILE);
-  if (fs.existsSync(bundled)) return bundled;
+  // When `roots` is injected the caller is asking about *those* roots only, so the
+  // bundled check and the default search list must not leak in. Otherwise a real model
+  // on disk silently wins and a search-path test asserts nothing.
+  const bundled = overrideRoots ? null : path.join(MODEL_DIR, MODEL_FILE);
+  if (bundled && fs.existsSync(bundled)) return bundled;
 
-  const roots = [MODEL_DIR, ...EXTRA_DIRS].filter((d) => fs.existsSync(d));
+  const roots = (overrideRoots || [MODEL_DIR, ...EXTRA_DIRS]).filter((d) => fs.existsSync(d));
   const found = roots.flatMap((r) => walk(r));
   const match = found.find((f) => path.basename(f).startsWith(LMSTUDIO_GLOB)) || found[0];
   if (match) return match;

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>HandsFree</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <div class="brandtext">
+          <strong>HandsFree</strong>
+          <span id="model" class="sub">connecting…</span>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <!-- Connection -->
+      <section class="card" aria-labelledby="srv-h">
+        <h2 id="srv-h">
+          Server
+          <span id="dot" class="dot-inline" aria-hidden="true"></span>
+        </h2>
+        <p id="status" class="status" role="status" aria-live="polite">Connecting…</p>
+        <p id="connError" class="error" role="alert" hidden></p>
+        <details class="adv" id="adv">
+          <summary>Connection settings</summary>
+          <div class="row">
+            <div class="field grow">
+              <label for="host">Host</label>
+              <input id="host" type="text" value="127.0.0.1" spellcheck="false" autocomplete="off" />
+            </div>
+            <div class="field port">
+              <label for="port">Port</label>
+              <input id="port" type="number" min="1" max="65535" value="8787" />
+            </div>
+          </div>
+          <button id="connect" class="btn primary block">Connect</button>
+        </details>
+      </section>
+
+      <!-- Tracking -->
+      <section class="card" aria-labelledby="trk-h">
+        <h2 id="trk-h">
+          Pointer control
+          <span id="trkState" class="pill">off</span>
+        </h2>
+
+        <div class="row">
+          <button id="track" class="btn primary grow" aria-pressed="false">Enable tracking</button>
+          <button id="recenter" class="btn" disabled>Re-center</button>
+        </div>
+
+        <p class="hint" id="trkHint">Uses your camera. Nothing leaves this machine.</p>
+
+        <div class="row">
+          <div class="field grow">
+            <label for="mode">Control mode</label>
+            <select id="mode">
+              <option value="head">Head</option>
+              <option value="blend">Gaze + head</option>
+              <option value="eye">Gaze (est.)</option>
+            </select>
+          </div>
+          <div class="field grow">
+            <label for="clickMode">Click</label>
+            <select id="clickMode">
+              <option value="pinch">Pinch</option>
+              <option value="none">Off</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="slider-row">
+          <label for="sens">Pointer</label>
+          <input id="sens" type="range" min="0.3" max="3" step="0.1" value="1" />
+          <output id="sensOut">1.0</output>
+        </div>
+        <div class="slider-row">
+          <label for="eyeSens">Gaze</label>
+          <input id="eyeSens" type="range" min="0.2" max="3" step="0.1" value="1" />
+          <output id="eyeSensOut">1.0</output>
+        </div>
+
+        <div class="checks">
+          <label class="check"><input id="mirror" type="checkbox" checked /><span>Mirror</span></label>
+          <label class="check"><input id="snap" type="checkbox" /><span>Snap to links</span></label>
+        </div>
+      </section>
+
+      <!-- Voice -->
+      <section class="card" aria-labelledby="voc-h">
+        <h2 id="voc-h">
+          Commands
+          <span id="micState" class="pill">off</span>
+        </h2>
+        <div class="row">
+          <button id="listen" class="btn primary grow" aria-pressed="false" disabled>Start listening</button>
+        </div>
+        <form id="cmdForm" class="row">
+          <input id="cmd" type="text" placeholder="or type: go to wikipedia" autocomplete="off" aria-label="Command" />
+          <button type="submit" class="btn">Run</button>
+        </form>
+      </section>
+
+      <details class="logwrap">
+        <summary id="logSummary">How it works &amp; recent activity</summary>
+        <ul class="help">
+          <li>Sit where you want the pointer to rest, then press Re-center.</li>
+          <li>Move your head to steer. Sensitivity scales the travel.</li>
+          <li>Pinch thumb and index to click; risky buttons still need a spoken “confirm”.</li>
+          <li>If the cursor drifts after you move, press Re-center again.</li>
+          <li>
+            Gaze modes estimate direction from iris position in the webcam image. They are
+            less precise than head pointing and are not calibrated against your screen.
+          </li>
+          <li>A pinch needs two frames and a short cooldown, so holding it fires one click.</li>
+        </ul>
+        <ul id="log" class="log" aria-label="Recent activity"></ul>
+      </details>
+    </main>
+
+    <footer>
+      <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> panel · <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> voice
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

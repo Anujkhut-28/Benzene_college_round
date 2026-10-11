@@ -5,6 +5,7 @@ const GPU_PREF = (process.env.HANDSFREE_GPU ?? "true").toLowerCase() !== "false"
 
 let runtime = null;
 let loading = null;
+let lastErr = null;
 const listeners = new Set();
 
 export function onRuntimeChange(fn) {
@@ -35,7 +36,6 @@ export async function getRuntime() {
       return { llama, model, context, device: gpu ? (llama.gpu === false ? "cpu" : "gpu") : "cpu" };
     };
 
-    let lastErr;
     if (GPU_PREF) {
       emit({ status: "loading", device: "gpu" });
       try {
@@ -47,7 +47,14 @@ export async function getRuntime() {
     }
     if (!runtime) {
       emit({ status: "loading", device: "cpu" });
-      runtime = await attempt(false);
+      try {
+        runtime = await attempt(false);
+      } catch (err) {
+        // Surface the CPU failure to the caller; the GPU error alone is misleading
+        // because "no GPU" is the expected path on most machines.
+        lastErr = err;
+        throw err;
+      }
     }
 
     runtime.modelPath = modelPath;

@@ -27,6 +27,24 @@ node src/server.js
 
 Then open **http://localhost:8787** in Chrome or Edge.
 
+### As a Chrome/Edge extension
+
+The extension is optional — the control page works on its own. Use it when you want voice and
+tracking to run in the page you are actually browsing, rather than in a second control window.
+
+1. Run `npm run build:extension` (generates `extension/head-tracker-core.js` from the shared tracker).
+2. Open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked**, and pick `extension/`.
+3. Start the server, then click the HandsFree toolbar icon.
+
+The service worker owns one WebSocket to `ws://127.0.0.1:8787` and reconnects with backoff.
+MediaPipe and the landmark models are **vendored into `extension/vendor/`** (~30 MB), so the
+extension works offline and satisfies the MV3 rule against remote code.
+
+| keyboard | does |
+| --- | --- |
+| `Alt+Shift+H` | open the popup |
+| `Alt+Shift+V` | start or stop voice control |
+
 First run only: place the decision model at `models/Jev-Style-0.8B-Decision-v3-Q4_K_M.gguf`
 ([download](https://huggingface.co/chaoliangUNSW/Jev-Style-0.8B-Decision-v3-GGUF)). HandsFree also
 finds it automatically in `~/.lmstudio/models`, or you can set `HANDSFREE_MODEL` to any `.gguf`.
@@ -136,7 +154,8 @@ pass and returns calibrated probabilities.
 - `src/rules.js` recognises everyday commands instantly, with no model call.
 - `src/policy.js` turns answers into act / wait / ignore / confirm / disambiguate, with every
   threshold shown live in the UI.
-- `src/public/head-tracker.js` runs webcam eye/head tracking and pinch-to-click in the control page.
+- `src/public/head-tracker.js` runs webcam eye/head tracking and pinch-to-click. The extension
+  reuses it via `scripts/build-extension.js`, so both surfaces track identically.
 
 ## Configuration
 
@@ -155,8 +174,13 @@ or attach to a browser you already started with `--cdp http://127.0.0.1:9222`.
 ## Tests
 
 ```bash
-npm test
+npm test              # unit tests
+npm run test:all      # unit + integration
+npm run build:extension
 ```
+
+`npm test` needs no model and no network. The integration suite asserts on real model
+probabilities, so it skips unless a decision model is present or `TYPESAFE_API_KEY` is set.
 
 ## Security
 

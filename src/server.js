@@ -133,26 +133,36 @@ export async function startServer(opts = {}) {
 
     async function handleMessage(msg) {
       switch (msg.type) {
-        case "transcript":
-          controller.handleTranscript({ text: msg.text, final: Boolean(msg.final), utteranceId: msg.utteranceId });
-          break;
-        case "command":
-          controller.handleCommand(msg.text);
-          break;
-        case "undo":
-          controller.undo();
-          break;
-        case "snapshot":
-          controller.refreshSnapshot();
-          break;
-        case "pointer":
-          await browser.pointer(msg).catch(() => {});
-          // A pinch click can navigate; refresh so voice commands see the new page.
-          if (msg.click) setTimeout(() => controller.refreshSnapshot().catch(() => {}), 700);
-          break;
-        case "click":
-          await browser.clickElement(msg.elementId, { source: "pointer" }).catch(() => {});
-          break;
+          case "transcript":
+            controller.handleTranscript({ text: msg.text, final: Boolean(msg.final), utteranceId: msg.utteranceId });
+            break;
+          case "command":
+            controller.handleCommand(msg.text);
+            break;
+          case "undo":
+            controller.undo();
+            break;
+          case "snapshot":
+            controller.refreshSnapshot();
+            break;
+          case "pointer": {
+            try {
+              await browser.pointer(msg);
+            } catch (err) {
+              console.error(`browser.pointer failed: ${err.message || err}`);
+            }
+            // A pinch click can navigate; refresh so voice commands see the new page.
+            if (msg.click) setTimeout(() => controller.refreshSnapshot().catch(err => console.error(`snapshot refresh failed: ${err?.message || err}`)), 700);
+            break;
+          }
+          case "click": {
+            try {
+              await browser.clickElement(msg.elementId, { source: "pointer" });
+            } catch (err) {
+              console.error(`browser.clickElement failed: ${err.message || err}`);
+            }
+            break;
+          }
         case "reopen": {
           const health = await fetch(`http://${host}:${opts.port}/api/browser/reopen`, { method: "POST" }).catch(() => null);
           ws.send(JSON.stringify({ type: "browser", payload: health ? await health.json().catch(() => ({ ok: false })) : { ok: false, error: "unreachable" } }));

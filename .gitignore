@@ -14,3 +14,10 @@ dist/
 installer/runtime/
 .probe-profile/
 AGENTS.md
+
+# Generated from src/public/head-tracker.js by `npm run build:extension`.
+extension/head-tracker-core.js
+
+# Vendored MediaPipe is committed on purpose: the extension must run fully offline.
+# (~30 MB of .wasm and .task models. Drop these lines if you would rather fetch them at build time.)
+!extension/vendor/**

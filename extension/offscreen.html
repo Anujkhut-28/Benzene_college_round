@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>HandsFree vision host</title>
+  </head>
+  <body>
+    <!--
+      Hosts MediaPipe. A content script cannot use dynamic import() under the MV3
+      extension CSP, and the offscreen document can, so the landmark models live here
+      and the content script only runs the smoothing maths.
+    -->
+    <!--
+      A 1px, off-screen video rather than display:none. Some Chrome builds stop
+      decoding a fully hidden video element, and MediaPipe needs real frames.
+    -->
+    <video
+      id="src"
+      playsinline
+      autoplay
+      muted
+      style="position:fixed;left:-10px;top:-10px;width:1px;height:1px;opacity:0;pointer-events:none"
+    ></video>
+    <script src="offscreen.js"></script>
+  </body>
+</html>

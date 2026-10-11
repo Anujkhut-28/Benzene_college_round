@@ -1,9 +1,12 @@
 /**
- * Integration test against the REAL Jev API: given a page snapshot fixture and a transcript,
- * does the (Jev answers -> policy) pipeline produce the expected intent / target / decision?
+ * Integration test against the REAL decision backend: given a page snapshot fixture and a
+ * transcript, does the (answers -> policy) pipeline produce the expected intent / target / decision?
  *
- * Prints a pass-rate report and per-call latency. Requires TYPESAFE_API_KEY (or JEV_API_KEY);
- * skips otherwise. Cost of a full run: well under one cent.
+ * Runs against whichever backend is configured: the hosted API with TYPESAFE_API_KEY, or the
+ * embedded GGUF via HANDSFREE_BACKEND=local. Skips when neither is usable, because these cases
+ * assert on real model probabilities and cannot be satisfied without one.
+ *
+ * Prints a pass-rate report and per-call latency. A full API run costs well under one cent.
  */
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
@@ -13,6 +16,22 @@ import { fileURLToPath } from "node:url";
 import { decide, hasApiKey } from "../../src/jev.js";
 import { evaluatePolicy } from "../../src/policy.js";
 import { MODEL } from "../../src/constants.js";
+import { modelInfo } from "../../src/model-path.js";
+
+/**
+ * A backend is usable if it has an API key, or it is the embedded one and a model is
+ * actually on disk. `hasApiKey()` alone returns true for the local backend regardless of
+ * whether a GGUF exists, which would turn "no model downloaded" into a wall of failures.
+ */
+const backendUsable = () => {
+  if (process.env.TYPESAFE_API_KEY || process.env.JEV_API_KEY) return true;
+  return hasApiKey() && Boolean(modelInfo().path);
+};
+const skipReason = backendUsable()
+  ? false
+  : hasApiKey()
+    ? "no decision model found (set HANDSFREE_MODEL, or use the hosted API)"
+    : "no TYPESAFE_API_KEY / JEV_API_KEY and no local model";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixture = (name) => JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", `${name}.json`), "utf8"));
@@ -147,11 +166,11 @@ CASES.push(
 const results = [];
 
 before(() => {
-  if (!hasApiKey()) console.log("SKIP: no TYPESAFE_API_KEY / JEV_API_KEY set");
+  if (skipReason) console.log(`SKIP: ${skipReason}`);
 });
 
 for (const c of CASES) {
-  test(`jev: ${c.name} — "${c.transcript}"`, { skip: !hasApiKey() }, async () => {
+  test(`jev: ${c.name} — "${c.transcript}"`, { skip: skipReason }, async () => {
     const snapshot = typeof c.snapshot === "string" ? fixture(c.snapshot) : c.snapshot;
     const r = await decide({ transcript: c.transcript, snapshot, context: c.context ?? null });
     const policy = evaluatePolicy({ answers: r.answers, candidates: r.candidates, snapshot, isFinal: c.final !== false, context: c.context ?? null });
@@ -178,7 +197,7 @@ for (const c of CASES) {
   });
 }
 
-test("integration pass-rate report", { skip: !hasApiKey() }, () => {
+test("integration pass-rate report", { skip: skipReason }, () => {
   const passed = results.filter((r) => r.ok).length;
   const lat = results.map((r) => r.latency).sort((a, b) => a - b);
   const p50 = lat[Math.floor(lat.length / 2)];

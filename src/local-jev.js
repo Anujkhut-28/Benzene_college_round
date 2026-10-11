@@ -156,7 +156,7 @@ export async function decide(input, { signal } = {}) {
   const skip = ruled ? Object.keys(ruled).filter((k) => k in asked) : [];
   const subset = Object.fromEntries(Object.entries(asked).filter(([k]) => !skip.includes(k)));
 
-  const modelAnswers = Object.keys(subset).length ? await decideBatch(promptState, subset) : {};
+  const modelAnswers = Object.keys(subset).length ? await decideBatch(promptState, subset, { signal }) : {};
   const answers = ruled ? { ...ruled, ...modelAnswers } : modelAnswers;
 
   if (ruled && ruled.ordinal !== undefined && answers.target?.choice) {

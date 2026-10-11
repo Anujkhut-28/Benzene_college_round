@@ -19,14 +19,39 @@ const DEFAULTS = {
   // eye / blend modes
   minCutoff: 0.35,
   beta: 0.05,
+  // Iris landmarks are much noisier than head pose, so eye modes get their own,
+  // wider dead zone and a stiffer filter. Without this the cursor twitches constantly.
+  eyeDeadzone: 0.02,
+  eyeSensitivity: 1.0,
   eyeMedian: 1, // start() raises this to 5
-  margin: 0.04,
-  deadzone: 0.008, // smooth dead-zone to suppress resting head micro-tremor
+  margin: 0.02,
+  deadzone: 0.006, // smooth dead-zone to suppress resting head micro-tremor
+  deadzoneX: null, // null => fall back to `deadzone`
+  deadzoneY: null,
+  /**
+   * Max cursor travel per second, in normalised screen units. Clamps landmark
+   * teleports (a re-detected face, a mirrored frame, a tracker hiccup) without
+   * capping how fast a real head turn can move the cursor.
+   */
+  maxSpeed: 3.5,
+  /** Frames of landmarks median-filtered before use; kills single-frame spikes. */
+  landmarkMedian: 3,
   mirror: true,
   showVideo: true,
   clickMode: "pinch",
   pinchOn: 0.25,
   pinchOff: 0.35,
+  /** Consecutive pinch samples required before a gesture is accepted. */
+  pinchConfirmFrames: 2,
+  /**
+   * Minimum gap between two accepted pinch clicks. Without it a user holding the
+   * gesture steady across a landmark wobble can fire a second click at the same spot.
+   */
+  pinchCooldownMs: 450,
+  /** Hold the hand open (pinchOff) for this long before another pinch can be armed. */
+  pinchRearmMs: 120,
+  /** Consecutive frames the hand may be missing before a held pinch is treated as released. */
+  handMissTolerance: 3,
   calibrationFrames: 1, // start() raises this to 15
   blinkHoldMs: 150,
 };
@@ -37,10 +62,17 @@ const NOSE = 1;
 const L_CHEEK = 234;
 const R_CHEEK = 454;
 
+/** Frames the hand may be missing before a held pinch counts as released. */
+const HAND_MISS_TOLERANCE = 3;
+
 const EYE_GAIN_X = 6.5;
 const EYE_GAIN_Y = 8.5;
-const HEAD_GAIN_X = 5.0;
-const HEAD_GAIN_Y = 6.0;
+// Head pointing maps the nose's position between the cheeks onto the screen. A
+// comfortable head turn spans roughly +-0.09 of image width; these gains put the
+// screen edges at about half that, so the full screen is reachable without
+// straining, while small adjustments still feel precise.
+const HEAD_GAIN_X = 4.5;
+const HEAD_GAIN_Y = 5.5;
 
 /** One Euro filter: adaptive low-pass filter, rock-steady at rest, low-latency on fast moves. */
 export class OneEuro {
@@ -53,10 +85,13 @@ export class OneEuro {
     this.t = 0;
   }
   static alpha(cutoff, dt) {
+    if (!(cutoff > 0) || !(dt > 0)) return 0;
     const tau = 1 / (2 * Math.PI * cutoff);
     return 1 / (1 + tau / dt);
   }
   filter(v, tMs, minCutoff = 0.8, beta = 0.08, dcutoff = 1.0) {
+    // A non-finite sample (NaN from a degenerate landmark) must never poison the state.
+    if (!Number.isFinite(v)) return this.x ?? 0;
     if (this.x === null || !Number.isFinite(this.x)) {
       this.x = v;
       this.dx = 0;
@@ -64,7 +99,7 @@ export class OneEuro {
       return v;
     }
     const rawDt = (tMs - this.t) / 1000;
-    if (rawDt <= 0) return this.x;
+    if (!(rawDt > 0)) return this.x;
     // If a large pause happened (> 250ms), recover smoothly without derivative spike
     if (rawDt > 0.25) {
       this.dx = 0;
@@ -133,8 +168,13 @@ export class HeadTracker {
     this._lastVideoTime = -1;
     this._frame = 0;
     this._pinch = false;
+    this._handMisses = 0;
     this.pinched = false;
     this.pinchWasDown = false;
+    this._pinchRun = 0;
+    this._armed = true;
+    this._rearmAt = 0;
+    this._lastPinchAt = 0;
     this._lostFrames = 0;
     this._reacquireFrames = 0;
     this._hasValidPoint = false;
@@ -148,6 +188,11 @@ export class HeadTracker {
 
   update(patch) {
     Object.assign(this.cfg, patch || {});
+    // The hand model is only loaded on demand, so switching Click to "Pinch" after
+    // tracking has started would otherwise leave pinch-to-click silently dead.
+    if (this.running && this.cfg.clickMode === "pinch" && !this.handLandmarker) {
+      this.loadHands().catch(() => {});
+    }
     return this.cfg;
   }
 
@@ -235,9 +280,19 @@ export class HeadTracker {
   /** True while thumb and index are pinched (normalised by hand size, with hysteresis). */
   pinching(hand) {
     if (!hand || hand.length < 21) {
-      this.pinched = false;
-      return false;
+      // A frame with no hand is a tracking dropout, not a deliberate release. Clear the
+      // latch only after several consecutive misses, so one bad frame cannot turn into a
+      // phantom second click when the hand reappears still closed.
+      this._handMisses = (this._handMisses ?? 0) + 1;
+      if (this._handMisses >= (this.cfg.handMissTolerance ?? HAND_MISS_TOLERANCE)) {
+        this.pinched = false;
+        this._handMisses = 0;
+      }
+      // Report the latch, not "no hand", so the caller's rising-edge detection does
+      // not see a release-and-repress across a dropped frame.
+      return this.pinched;
     }
+    this._handMisses = 0;
     const thumb = hand[4];
     const index = hand[8];
     const wrist = hand[0];
@@ -256,7 +311,9 @@ export class HeadTracker {
   stop() {
     this.running = false;
     this.cfg.enabled = false;
-    cancelAnimationFrame(this.raf);
+    // Guarded so stop() is safe to call outside a DOM context (tests, service shutdown).
+    if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(this.raf);
+    this.raf = 0;
     const stream = this.video?.srcObject;
     if (stream) for (const t of stream.getTracks()) t.stop();
     if (this.video) this.video.srcObject = null;
@@ -267,8 +324,13 @@ export class HeadTracker {
     this.pinched = false;
     this.pinchWasDown = false;
     this._pinch = false;
+    this._handMisses = 0;
+    this._pinchRun = 0;
+    this._armed = true;
+    this._rearmAt = 0;
+    this._lastPinchAt = 0;
     this._lastVideoTime = -1;
-    this.onStatus({ state: "stopped" });
+    this.onStatus((this._lastStatus = { state: "stopped" }));
   }
 
   recalibrate() {
@@ -280,6 +342,9 @@ export class HeadTracker {
     this._isBlinking = false;
     this._blinkUntil = 0;
     this._eyeBuf = [];
+    this._pxBuf = [];
+    this._pyBuf = [];
+    this._lostSince = 0;
     this.fx.reset();
     this.fy.reset();
     this.smooth = { x: 0.5, y: 0.5 };
@@ -289,6 +354,10 @@ export class HeadTracker {
     this._hasValidPoint = false;
     this._prevRawPoint = null;
     this._prevPointTime = 0;
+    this._handMisses = 0;
+    this._pxBuf = [];
+    this._pyBuf = [];
+    this._lostSince = 0;
   }
 
   processFrame(marks, ts = performance.now()) {
@@ -296,10 +365,12 @@ export class HeadTracker {
       this._lostFrames++;
       this._reacquireFrames = 0;
       this._prevRawPoint = null;
+      if (!this._lostSince) this._lostSince = ts;
       return {
         point: { ...this.point },
         face: false,
         lost: true,
+        lostForMs: Math.round(ts - this._lostSince),
         calibrating: this.calibrating,
       };
     }
@@ -308,10 +379,13 @@ export class HeadTracker {
     if (!p) {
       this._lostFrames++;
       this._reacquireFrames = 0;
+      this._prevRawPoint = null;
+      if (!this._lostSince) this._lostSince = ts;
       return {
         point: { ...this.point },
         face: false,
         lost: true,
+        lostForMs: Math.round(ts - this._lostSince),
         calibrating: this.calibrating,
       };
     }
@@ -330,6 +404,16 @@ export class HeadTracker {
 
     // Reacquisition smoothing after face tracking was lost
     if (this._lostFrames > 0) {
+      // A long absence means the user has almost certainly moved: leaned closer,
+      // turned away, or shifted seat. The old neutral pose no longer describes them,
+      // so re-establish it rather than yanking the cursor across the screen to a
+      // position derived from a stale baseline.
+      const awayMs = this._lostSince ? ts - this._lostSince : 0;
+      if (awayMs > (this.cfg.recalibrateAfterMs ?? 2000)) {
+        this._lostSince = 0;
+        this.recalibrate();
+        return { point: { ...this.point }, face: true, recalibrating: true, calibrating: true };
+      }
       this._reacquireFrames++;
       if (this._hasValidPoint) {
         this.fx.x = this.point.x;
@@ -351,20 +435,29 @@ export class HeadTracker {
       }
       this._lostFrames = 0;
       this._reacquireFrames = 0;
+      this._lostSince = 0;
     }
 
-    // Outlier rejection: clamp implausible single-frame jumps
+    this._lostSince = 0;
     const dtSec = this._prevPointTime > 0 ? Math.max(1e-3, (ts - this._prevPointTime) / 1000) : 0.033;
     this._prevPointTime = ts;
 
+    // Median over the last few output points. A landmark spike that survives the speed
+    // limiter still cannot pull the cursor, because it is outvoted by its neighbours.
+    if (!Array.isArray(this._pxBuf)) this._pxBuf = [];
+    if (!Array.isArray(this._pyBuf)) this._pyBuf = [];
     const rawTarget = { x: p.x, y: p.y };
     if (this._prevRawPoint && this._hasValidPoint) {
+      // Rate-limit in screen-fractions per second rather than per frame, so the limit
+      // is the same at 15 fps and 60 fps. The reference is the previous *raw* target,
+      // not the filtered cursor: comparing against the filtered value compounds the
+      // smoothing lag into an extra artificial delay, which reads as sluggishness.
       const stepX = rawTarget.x - this._prevRawPoint.x;
       const stepY = rawTarget.y - this._prevRawPoint.y;
       const stepDist = Math.hypot(stepX, stepY);
-      const maxAllowed = Math.max(0.12, 4.5 * dtSec);
-      if (stepDist > maxAllowed) {
-        const scale = maxAllowed / stepDist;
+      const maxStep = this.cfg.maxSpeed * dtSec;
+      if (stepDist > maxStep) {
+        const scale = maxStep / stepDist;
         rawTarget.x = this._prevRawPoint.x + stepX * scale;
         rawTarget.y = this._prevRawPoint.y + stepY * scale;
       }
@@ -378,6 +471,10 @@ export class HeadTracker {
     const fx = clamp01(this.fx.filter(rawTarget.x, ts, minCutoff, beta));
     const fy = clamp01(this.fy.filter(rawTarget.y, ts, minCutoff, beta));
 
+    // A 3-tap median here would cost a frame of lag on every legitimate move, which reads
+    // as sluggishness. The speed limiter above already removes teleports, and the One
+    // Euro filter removes jitter, so the median is deliberately not used on the
+    // smoothed output.
     this.smooth = { x: fx, y: fy };
     this.point = { x: fx, y: fy };
     this._hasValidPoint = true;
@@ -415,7 +512,11 @@ export class HeadTracker {
     if (!frameResult) return;
 
     if (!frameResult.face) {
-      this.onStatus({ state: "running", face: false });
+      // The face is gone, so the cursor position is no longer meaningful. Also drop any
+      // in-progress gesture: resuming a pinch the user had already completed by the
+      // time the face returned would fire an unwanted click.
+      this._pinchRun = 0;
+      this.onStatus((this._lastStatus = { state: "running", face: false }));
       this.draw(null);
       return;
     }
@@ -427,17 +528,51 @@ export class HeadTracker {
     this._frame += 1;
     const wantPinch = this.cfg.clickMode === "pinch" && this.handLandmarker;
     if (wantPinch && this._frame % 2 === 0) this._pinch = this.detectPinch(v);
-    const pinch = wantPinch ? this._pinch : false;
-    if (pinch && !this.pinchWasDown) {
-      this.onActivate({ click: { ...this.point }, pinch: true });
-    }
-    this.pinchWasDown = pinch;
-    this.onStatus({
+    const rawPinch = wantPinch ? this._pinch : false;
+
+    const pinch = this.updateGesture(rawPinch, this._lastFaceTime);
+    this.onStatus((this._lastStatus = {
       state: "running",
       face: true,
       calibrating: this.calibrating,
       pinching: pinch,
-    });
+      blinking: this._isBlinking,
+    }));
+  }
+
+  /**
+   * Turn a raw pinch sample into an accepted click, with three independent guards:
+   *   confirm - N consecutive samples, so one noisy frame cannot click;
+   *   rearm - the hand must visibly open again before another click is allowed;
+   *   cooldown - a minimum gap, so holding the gesture cannot machine-gun clicks.
+   * Returns the visual "is the gesture currently held" state.
+   */
+  updateGesture(rawPinch, ts = performance.now()) {
+    if (rawPinch) this._pinchRun += 1;
+    else this._pinchRun = 0;
+    const confirmed = this._pinchRun >= (this.cfg.pinchConfirmFrames ?? 2);
+
+    // Rearm requires the *raw* signal to be open, not the latched visual state: after a
+    // click, `pinched` stays true until the hand actually opens, and gating on it
+    // would mean the timer never starts, so a second pinch could never be accepted.
+    if (rawPinch) {
+      this._rearmAt = 0;
+    } else {
+      if (!this._rearmAt) this._rearmAt = ts;
+      if (ts - this._rearmAt >= (this.cfg.pinchRearmMs ?? 120)) this._armed = true;
+    }
+
+    // Visual state: the gesture is "held" while either the raw or latched signal is on.
+    const held = rawPinch || this.pinched;
+    const cooled = ts - this._lastPinchAt >= (this.cfg.pinchCooldownMs ?? 450);
+    if (confirmed && this._armed && cooled) {
+      this._lastPinchAt = ts;
+      this._armed = false;
+      this._pinchRun = 0;
+      this.onActivate({ click: { ...this.point }, pinch: true });
+    }
+    this.pinched = held;
+    return held;
   }
 
   detectPinch(v) {
@@ -458,13 +593,19 @@ export class HeadTracker {
     const leftCheek = marks[L_CHEEK];
     const rightCheek = marks[R_CHEEK];
     if (!nose || !leftCheek || !rightCheek) return null;
+    if (!finitePoint(nose) || !finitePoint(leftCheek) || !finitePoint(rightCheek)) return null;
 
     const midX = (leftCheek.x + rightCheek.x) / 2;
     const midY = (leftCheek.y + rightCheek.y) / 2;
     // Euclidean cheek distance to resist head tilt
     const cheekDist = Math.max(0.04, Math.hypot(rightCheek.x - leftCheek.x, rightCheek.y - leftCheek.y));
+    // Median over the last few frames. A single bad landmark detection otherwise moves
+    // the cursor for a whole frame; the median discards it outright.
     const yaw = (nose.x - midX) / cheekDist;
     const pitch = (nose.y - midY) / cheekDist;
+    // Only a genuinely implausible face size is rejected: a user moving closer to the
+    // camera is normal and must not be treated as tracking loss.
+    if (!Number.isFinite(cheekDist) || cheekDist > 1.5) return null;
 
     const needEye = this.cfg.mode !== "head" && marks.length >= 478;
     const eye = needEye ? this.eyeSample(marks) : null;
@@ -516,8 +657,12 @@ export class HeadTracker {
       rawY = this.centered(pitch, "pitch");
     }
 
-    const sx = (this.cfg.sensitivityX ?? 1.0) * (this.cfg.sensitivity ?? 1.0);
-    const sy = (this.cfg.sensitivityY ?? 1.0) * (this.cfg.sensitivity ?? 1.0);
+    const usingEyes = this.cfg.mode !== "head" && Boolean(gaze);
+    // Eye modes get their own gain multiplier so a user who cannot hold their head still
+    // can turn the whole gain down without losing head control, and vice versa.
+    const eyeGain = usingEyes ? (this.cfg.eyeSensitivity ?? 1) : 1;
+    const sx = (this.cfg.sensitivityX ?? 1.0) * (this.cfg.sensitivity ?? 1.0) * eyeGain;
+    const sy = (this.cfg.sensitivityY ?? 1.0) * (this.cfg.sensitivity ?? 1.0) * eyeGain;
     let x = 0.5 + (rawX - 0.5) * sx;
     let y = 0.5 + (rawY - 0.5) * sy;
     if (this.cfg.mirror) x = 1 - x;
@@ -526,9 +671,12 @@ export class HeadTracker {
     x = clamp01((x - m) / (1 - 2 * m));
     y = clamp01((y - m) / (1 - 2 * m));
 
-    const d = this.cfg.deadzone ?? 0;
-    x = applySmoothDeadzone(x, 0.5, d);
-    y = applySmoothDeadzone(y, 0.5, d);
+    // Per-axis dead zones: vertical head motion carries far more sensor noise than
+    // horizontal, so one shared threshold either jitters vertically or feels sluggish.
+    // Iris landmarks are noisier still, so eye modes widen it further.
+    const dz = usingEyes ? Math.max(this.cfg.deadzone ?? 0, this.cfg.eyeDeadzone ?? 0) : this.cfg.deadzone ?? 0;
+    x = applySmoothDeadzone(x, 0.5, this.cfg.deadzoneX ?? dz);
+    y = applySmoothDeadzone(y, 0.5, this.cfg.deadzoneY ?? dz);
     return { x: clamp01(x), y: clamp01(y) };
   }
 
@@ -537,6 +685,12 @@ export class HeadTracker {
       running: this.running,
       calibrating: this.calibrating,
       mode: this.cfg.mode,
+      // This is an *estimate* of gaze direction from iris position within the eye
+      // aperture plus head pose. It is not calibrated against a screen and cannot know
+      // where the user is actually looking. UI should not claim otherwise.
+      gazeIsEstimated: true,
+      blinking: this._isBlinking,
+      lastStatus: this._lastStatus ?? null,
       baseline: this.baseline ? { ...this.baseline } : null,
       rawPoint: this._prevRawPoint ? { ...this._prevRawPoint } : null,
       filteredPoint: { ...this.point },
@@ -595,8 +749,18 @@ export class HeadTracker {
 
   eyeGaze(eye) {
     if (!eye) return null;
+    // While blinking, hold the last known gaze. Returning null here instead would send
+    // the cursor to the head-pose value for that frame, which the One Euro filter then
+    // has to recover from - a blink every few seconds would read as a visible stutter.
     if (eye.blinking) return this._lastGaze || null;
+    if (!Number.isFinite(eye.x) || !Number.isFinite(eye.y)) return this._lastGaze || null;
     if (!this.eyeBase) this.eyeBase = { x: eye.x, y: eye.y };
+    // An eye sample far outside anything plausible means the iris landmarks jumped
+    // rather than the user looking sharply sideways. Treat it as a dropout so the
+    // cursor holds instead of snapping to an edge.
+    if (Math.abs(eye.x - this.eyeBase.x) > 0.6 || Math.abs(eye.y - this.eyeBase.y) > 0.6) {
+      return this._lastGaze || null;
+    }
     const gaze = {
       x: 0.5 + (eye.x - this.eyeBase.x) * EYE_GAIN_X,
       y: 0.5 + (eye.y - this.eyeBase.y) * EYE_GAIN_Y,
@@ -641,8 +805,25 @@ function clamp01(v) {
 }
 
 function median(a) {
+  if (!Array.isArray(a) || !a.length) return 0;
   const s = [...a].sort((p, q) => p - q);
   return s[Math.floor(s.length / 2)];
+}
+
+function finitePoint(p) {
+  return Number.isFinite(p?.x) && Number.isFinite(p?.y);
+}
+
+/**
+ * Push a sample and return the median of the buffer. `keep` of 1 disables filtering.
+ * A single outlier in a 3-frame window is discarded by the median outright.
+ */
+/** Append a sample, drop non-finite ones, and bound the buffer at `keep`. */
+function pushMedian(buf, value, keep = 3) {
+  if (!Array.isArray(buf)) return [];
+  if (Number.isFinite(value)) buf.push(value);
+  while (buf.length > keep) buf.shift();
+  return buf;
 }
 
 /** Iris centre relative to eye corners, normalized by eye width, with eyelid-closure detection. */
@@ -683,4 +864,18 @@ function irisOffset(marks, irisIdx, cornerA, cornerB, lidTop, lidBottom) {
   const normY = 0.5 + ((irisY - midY) / eyeWidth) * 2.5;
 
   return { x: normX, y: normY, blinking: isBlinking };
+}
+
+// Expose the classes on `window` so the file also works when loaded as a plain
+// script (the control page imports it as a module, but the extension's generated
+// build and anyone embedding it directly rely on the global).
+if (typeof window !== "undefined" && !window.HandsFreeTracker) {
+  window.HandsFreeTracker = {
+    HeadTracker,
+    HandsFreeTracker: HeadTracker,
+    OneEuro,
+    applySmoothDeadzone,
+    trimmedMean,
+    irisOffset,
+  };
 }

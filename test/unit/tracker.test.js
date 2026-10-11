@@ -65,6 +65,204 @@ test("head tracker: pinch activates and releases", () => {
   assert.equal(tracker.pinching(separated), false);
 });
 
+test("head tracker: a single-frame landmark spike never reaches the cursor", () => {
+  // Regression: the old fixed per-frame jump allowance was wide enough that one bad
+  // landmark frame could throw the cursor across most of the screen.
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1, mirror: false });
+  tracker.processFrame(makeFace(), 1000);
+  for (let i = 1; i <= 5; i++) tracker.processFrame(makeFace({ noseX: 0.52 }), 1000 + i * 33);
+
+  // A genuine single-frame glitch: one corrupted landmark frame surrounded by good ones.
+  // Measured as the cursor's displacement *caused by the glitch frame*, not its
+  // distance from centre, so ordinary convergence is not counted as jitter.
+  let worstJump = 0;
+  let prev = { x: tracker.point.x, y: tracker.point.y };
+  for (let i = 0; i < 40; i++) {
+    const glitched = i % 7 === 3;
+    const r = tracker.processFrame(
+      glitched ? makeFace({ noseX: 0.05, noseY: 0.95 }) : makeFace({ noseX: 0.52 }),
+      1200 + i * 33,
+    );
+    if (glitched) worstJump = Math.max(worstJump, Math.hypot(r.point.x - prev.x, r.point.y - prev.y));
+    prev = { x: r.point.x, y: r.point.y };
+  }
+  assert.ok(worstJump < 0.1, `a single-frame glitch displaced the cursor by ${worstJump.toFixed(3)}`);
+});
+
+test("head tracker: low frame rates are not artificially slowed by the speed limit", () => {
+  // The limit is expressed per second, so the same head movement over the same
+  // elapsed time must land in roughly the same place regardless of frame rate.
+  const run = (fps, seconds) => {
+    const dt = 1000 / fps;
+    const tracker = new HeadTracker({});
+    tracker.update({ mode: "head", calibrationFrames: 1, mirror: false });
+    tracker.processFrame(makeFace(), 1000);
+    const steps = Math.round(fps * seconds);
+    let last = null;
+    for (let i = 1; i <= steps; i++) {
+      last = tracker.processFrame(makeFace({ noseX: 0.5 + (i / steps) * 0.1 }), 1000 + i * dt);
+    }
+    return last.point.x;
+  };
+  const slow = run(15, 0.2); // 3 frames
+  const mid = run(30, 0.2); // 6 frames
+  const fast = run(60, 0.2); // 12 frames
+  // Every rate should respond; none should be pinned near the start.
+  for (const [label, v] of [["15", slow], ["30", mid], ["60", fast]]) {
+    assert.ok(v > 0.55, `at ${label} fps the cursor only reached ${v.toFixed(2)}`);
+  }
+});
+
+test("head tracker: returning after a long absence recalibrates instead of jumping", () => {
+  // Regression: the old baseline described where the user was before they left, so
+  // coming back threw the cursor to a stale, meaningless position.
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1, mirror: false });
+  tracker.processFrame(makeFace(), 1000);
+  for (let i = 1; i <= 5; i++) tracker.processFrame(makeFace({ noseX: 0.6 }), 1000 + i * 33);
+
+  // Out of frame for 5 seconds, then back in a noticeably different posture.
+  for (let i = 0; i < 15; i++) tracker.processFrame(null, 1200 + i * 33 * 5);
+  const back = tracker.processFrame(makeFace({ noseX: 0.58 }), 1200 + 15 * 33 * 5);
+
+  assert.ok(back.recalibrating || back.calibrating, "a long absence must trigger recalibration");
+  // Recalibration re-centres the cursor: the crucial part is that it does NOT stay
+  // pinned to the stale pre-absence position (0.6) or fly off to a corner.
+  assert.ok(Math.abs(back.point.x - 0.5) < 0.1, `cursor landed at ${back.point.x.toFixed(2)} on return`);
+});
+
+test("head tracker: a brief dropout does not force a recalibration", () => {
+  // Losing a frame or two is ordinary tracking noise and must not cost the user their
+  // calibration, or the cursor drifts on every blink-sized hiccup.
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1, mirror: false });
+  tracker.processFrame(makeFace(), 1000);
+  for (let i = 1; i <= 12; i++) tracker.processFrame(makeFace({ noseX: 0.6 }), 1000 + i * 33);
+  // Let the filter settle so the comparison measures the dropout, not convergence lag.
+  const before = tracker.point.x;
+  for (let i = 1; i <= 2; i++) tracker.processFrame(null, 1400 + i * 33);
+  const back = tracker.processFrame(makeFace({ noseX: 0.6 }), 1500);
+  assert.ok(!back.recalibrating, "a two-frame dropout must not recalibrate");
+  assert.ok(
+    Math.abs(back.point.x - before) < 0.05,
+    `cursor jumped from ${before.toFixed(2)} to ${back.point.x.toFixed(2)} across a dropout`,
+  );
+});
+
+test("head tracker: a lost frame reports how long the user has been gone", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1 });
+  tracker.processFrame(makeFace(), 1000);
+  tracker.processFrame(null, 1100);
+  const r = tracker.processFrame(null, 1500);
+  assert.equal(r.face, false);
+  assert.ok(r.lostForMs >= 400, `expected lostForMs ~500, got ${r.lostForMs}`);
+});
+
+test("head tracker: non-finite landmarks are treated as tracking loss, not a crash", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "head", calibrationFrames: 1 });
+  tracker.processFrame(makeFace(), 1000);
+  const broken = makeFace();
+  broken[1] = { x: NaN, y: 0.5, z: 0 };
+  let r;
+  assert.doesNotThrow(() => {
+    r = tracker.processFrame(broken, 1033);
+    r = tracker.processFrame(makeFace(), 1066);
+  });
+  assert.ok(Number.isFinite(r.point.x), "the cursor must remain a finite coordinate");
+});
+
+test("head tracker: the dead zone can be tuned per axis", () => {
+  // Vertical head motion is noisier than horizontal, so one shared threshold either
+  // jitters vertically or feels sluggish horizontally.
+  const mk = (cfg) => {
+    const t = new HeadTracker({});
+    t.update({ mode: "head", calibrationFrames: 1, mirror: false, ...cfg });
+    t.processFrame(makeFace(), 1000);
+    let mx = 0, my = 0;
+    // Tremor large enough for the dead zone to matter but well short of a real move.
+    for (let i = 1; i <= 60; i++) {
+      const wobble = Math.sin(i) * 0.004;
+      const r = t.processFrame(makeFace({ noseX: 0.5 + wobble, noseY: 0.5 + wobble * 1.3 }), 1000 + i * 33);
+      mx = Math.max(mx, Math.abs(r.point.x - 0.5));
+      my = Math.max(my, Math.abs(r.point.y - 0.5));
+    }
+    return { mx, my };
+  };
+  const same = mk({ deadzone: 0.008 });
+  const split = mk({ deadzone: 0.008, deadzoneY: 0.03 });
+  assert.ok(split.my < same.my, `a wider Y dead zone must reduce vertical jitter (${split.my} vs ${same.my})`);
+  assert.ok(split.mx <= same.mx + 1e-9, "a Y-only dead zone must not disturb X");
+});
+
+test("hand tracker: a dropped hand frame does not fire a phantom second click", () => {
+  // Regression: a single frame with no hand used to clear the pinch latch, so a hand
+  // that reappeared still closed counted as a brand new pinch, double-clicking.
+  const tracker = new HeadTracker({});
+  let clicks = 0;
+  let wasDown = false;
+  const feed = (hand) => {
+    const down = tracker.pinching(hand);
+    if (down && !wasDown) clicks += 1;
+    wasDown = down;
+  };
+
+  feed(makeHand(0.03));
+  assert.equal(clicks, 1, "the initial pinch is one click");
+
+  // One or two dropped frames: the tracker is still working, the hand is just occluded.
+  feed(null);
+  feed(null);
+  feed(makeHand(0.03));
+  assert.equal(clicks, 1, "a brief dropout must not re-trigger the click");
+
+  // A sustained absence really was a release, so pinching again is a new click.
+  feed(null);
+  feed(null);
+  feed(null);
+  feed(makeHand(0.03));
+  assert.equal(clicks, 2, "a sustained dropout releases the pinch");
+});
+
+test("hand tracker: pinch normalises by hand size so distance from camera does not matter", () => {
+  const near = new HeadTracker({});
+  const far = new HeadTracker({});
+  const touching = makeHand(0.03);
+  assert.equal(near.pinching(touching), true);
+
+  // Same pose, rendered at half the scale: the normalised gap must be unchanged.
+  const scaled = makeHand(0.015).map((p) => ({ x: 0.5 + (p.x - 0.5) / 2, y: 0.5 + (p.y - 0.5) / 2, z: 0 }));
+  assert.equal(far.pinching(scaled), true, "a pinch is a pinch whether you are near or far");
+});
+
+test("head tracker: switching to pinch mode after start loads the hand model", () => {
+  // Regression: the hand model was only ever loaded from start(), so choosing
+  // "Pinch" once tracking was already running left pinch-to-click silently dead.
+  const tracker = new HeadTracker({});
+  tracker.running = true;
+  tracker.handLandmarker = null;
+  let loaded = 0;
+  tracker.loadHands = async () => {
+    loaded += 1;
+    tracker.handLandmarker = { detectForVideo: () => ({ landmarks: [] }) };
+    return { ok: true };
+  };
+
+  tracker.update({ clickMode: "none" });
+  assert.equal(loaded, 0, "no hand model while pinch is off");
+
+  tracker.update({ clickMode: "pinch" });
+  return new Promise((resolve) =>
+    setImmediate(() => {
+      assert.equal(loaded, 1, "switching to pinch must load the hand model");
+      assert.ok(tracker.handLandmarker);
+      resolve();
+    }),
+  );
+});
+
 function makeFaceWithEyes({ irisOffsetDx = 0, lidClosed = false } = {}) {
   const marks = makeFace();
   marks[33] = { x: 0.35, y: 0.45, z: 0 };
@@ -105,6 +303,154 @@ test("eye tracker: blink maintains stable gaze without exploding", () => {
 
   const blinkingGaze = tracker.compute(makeFaceWithEyes({ irisOffsetDx: 0.01, lidClosed: true }));
   assert.ok(Math.abs(blinkingGaze.y - openGaze.y) < 0.05);
+});
+
+test("eye tracker: an implausible iris jump is treated as a dropout, not a flick", () => {
+  // A lost iris landmark makes the eye sample jump far outside any real gaze range.
+  // Without a guard the cursor snaps to the screen edge and the user has to recover.
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "eye" });
+  tracker.compute(makeFaceWithEyes({ irisOffsetDx: 0 }));
+  const settled = tracker.compute(makeFaceWithEyes({ irisOffsetDx: 0.01 }));
+  const wild = tracker.compute(makeFaceWithEyes({ irisOffsetDx: 3 }));
+  assert.ok(Number.isFinite(wild.x), "the cursor must stay finite");
+  assert.ok(Math.abs(wild.x - settled.x) < 0.5, `an iris dropout flung the cursor to ${wild.x.toFixed(2)}`);
+});
+
+test("eye tracker: eye sensitivity scales eye modes without touching head mode", () => {
+  const gazeAt = (cfg, dx) => {
+    const t = new HeadTracker({});
+    t.update({ mode: "eye", mirror: false, ...cfg });
+    t.compute(makeFaceWithEyes({ irisOffsetDx: 0 }));
+    return t.compute(makeFaceWithEyes({ irisOffsetDx: dx })).x;
+  };
+  // The synthetic eye spans a ~0.1 wide aperture, so usable iris travel is a few
+  // thousandths of normalised image width before gaze saturates at the edge.
+  const base = gazeAt({}, 0.002);
+  const damped = gazeAt({ eyeSensitivity: 0.4 }, 0.002);
+  assert.ok(damped < base, `lowering eye sensitivity must reduce travel (${damped.toFixed(2)} vs ${base.toFixed(2)})`);
+
+  // Head-only mode must ignore eyeSensitivity entirely.
+  const headAt = (cfg) => {
+    const t = new HeadTracker({});
+    t.update({ mode: "head", mirror: false, ...cfg });
+    t.compute(makeFace({ noseX: 0.5 }));
+    return t.compute(makeFace({ noseX: 0.56 })).x;
+  };
+  assert.equal(headAt({}), headAt({ eyeSensitivity: 0.2 }), "head mode must not be affected by eye gain");
+});
+
+test("eye tracker: eye modes suppress micro-movement better than head mode", () => {
+  // Tiny involuntary eye motion is the main source of twitchy cursor control.
+  const jitterAt = (mode) => {
+    const t = new HeadTracker({});
+    t.update({ mode, mirror: false, eyeMedian: 1 });
+    t.compute(makeFaceWithEyes({ irisOffsetDx: 0 }));
+    let worst = 0;
+    for (let i = 0; i < 40; i++) {
+      const dx = Math.sin(i) * 0.00015;
+      const p = t.compute(makeFaceWithEyes({ irisOffsetDx: dx }));
+      worst = Math.max(worst, Math.abs(p.x - 0.5));
+    }
+    return worst;
+  };
+  assert.ok(
+    jitterAt("eye") <= jitterAt("head") + 1e-9,
+    "eye mode should be no twitchier than head mode",
+  );
+});
+
+test("diagnostics do not overstate what the eye tracking can do", () => {
+  const tracker = new HeadTracker({});
+  tracker.update({ mode: "eye" });
+  const d = tracker.getDiagnostics();
+  assert.equal(d.gazeIsEstimated, true, "the UI must be told gaze is an estimate, not a measurement");
+});
+
+test("gesture: a single noisy pinch frame does not click", () => {
+  // One bad landmark frame must never reach the page as a click.
+  const tracker = new HeadTracker({});
+  let clicks = 0;
+  tracker.onActivate = () => (clicks += 1);
+  tracker.updateGesture(true, 1000);
+  assert.equal(clicks, 0, "one frame of pinch is not a gesture");
+  tracker.updateGesture(true, 1033);
+  assert.equal(clicks, 1, "two consecutive frames is a deliberate pinch");
+});
+
+test("gesture: holding the pinch steady never fires a second click", () => {
+  const tracker = new HeadTracker({});
+  let clicks = 0;
+  tracker.onActivate = () => (clicks += 1);
+  let t = 1000;
+  // A user holding the gesture, with small landmark wobble, for three seconds.
+  for (let i = 0; i < 90; i++) {
+    tracker.updateGesture(true, t);
+    t += 33;
+  }
+  assert.equal(clicks, 1, `holding the pinch fired ${clicks} clicks`);
+});
+
+test("gesture: a new pinch is allowed after the hand opens and the cooldown passes", () => {
+  const tracker = new HeadTracker({});
+  let clicks = 0;
+  tracker.onActivate = () => (clicks += 1);
+
+  let t = 1000;
+  tracker.updateGesture(true, t);
+  tracker.updateGesture(true, (t += 33));
+  assert.equal(clicks, 1);
+
+  // Hand opens and stays open long enough to rearm.
+  for (let i = 0; i < 10; i++) tracker.updateGesture(false, (t += 33));
+  // And the cooldown has elapsed.
+  tracker.updateGesture(true, (t += 600));
+  tracker.updateGesture(true, (t += 33));
+  assert.equal(clicks, 2, "a deliberate second pinch must register");
+});
+
+test("gesture: a brief re-close inside the cooldown does not click again", () => {
+  const tracker = new HeadTracker({});
+  let clicks = 0;
+  tracker.onActivate = () => (clicks += 1);
+  let t = 1000;
+  tracker.updateGesture(true, t);
+  tracker.updateGesture(true, (t += 33));
+  assert.equal(clicks, 1);
+
+  // A momentary gap in detection, then the hand is still closed.
+  for (let i = 0; i < 2; i++) tracker.updateGesture(false, (t += 33));
+  tracker.updateGesture(true, t += 33);
+  tracker.updateGesture(true, (t += 33));
+  assert.equal(clicks, 1, "hand still closed must not click again");
+});
+
+test("gesture: losing the face mid-gesture cancels it without clicking on return", () => {
+  const tracker = new HeadTracker({});
+  let clicks = 0;
+  tracker.onActivate = () => (clicks += 1);
+  tracker.updateGesture(true, 1000);
+  // Face lost: the caller drops the in-progress run.
+  tracker._pinchRun = 0;
+  tracker.updateGesture(true, 1100);
+  assert.equal(clicks, 0, "a pinch interrupted by face loss must not fire on reacquisition");
+});
+
+test("gesture: restart clears the cooldown so the first pinch works immediately", () => {
+  const tracker = new HeadTracker({});
+  let clicks = 0;
+  tracker.onActivate = () => (clicks += 1);
+  tracker.updateGesture(true, 1000);
+  tracker.updateGesture(true, 1033);
+  assert.equal(clicks, 1);
+
+  tracker.stop(); // camera stopped
+  tracker.running = true;
+  tracker.handLandmarker = { detectForVideo: () => ({ landmarks: [] }) };
+  // Immediately after restart the user pinches again.
+  tracker.updateGesture(true, 1100);
+  tracker.updateGesture(true, 1133);
+  assert.equal(clicks, 2, "a restart must not leave the gesture stuck in cooldown");
 });
 
 test("smooth deadzone: provides continuous C0 transition with no edge jumps", () => {

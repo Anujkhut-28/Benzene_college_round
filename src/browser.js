@@ -35,10 +35,15 @@ export class BrowserManager {
       this.browser = await chromium.connectOverCDP(cdp);
       this.context = this.browser.contexts()[0] || (await this.browser.newContext());
     } else {
+      // A small window would make the tracked cursor cover only part of the page, so
+      // open near-fullscreen. `--start-maximized` plus a slight inset keeps the browser
+      // chrome visible without leaving the cursor short of the edges.
       this.context = await chromium.launchPersistentContext(profileDir, {
         headless,
-        viewport: headless ? { width: 1280, height: 900 } : null,
-        args: headless ? [] : ["--window-size=1280,900", "--window-position=40,40"],
+        viewport: headless ? { width: 1600, height: 1000 } : null,
+        args: headless
+          ? []
+          : ["--start-maximized", "--window-position=0,0", "--window-size=1600,1000"],
         ignoreDefaultArgs: ["--enable-automation"],
       });
     }
@@ -169,15 +174,14 @@ export class BrowserManager {
   async getViewport() {
     const page = this.page;
     if (!page || page.isClosed()) return { width: 1280, height: 900 };
+    // Playwright only reports viewportSize() when a viewport override is set; headed
+    // windows have none, so fall through to the live window size. Caching that is what
+    // made the cursor unable to reach the screen edges after any resize.
     const vp = page.viewportSize();
     if (vp && vp.width && vp.height) return vp;
-    if (this._cachedVp) return this._cachedVp;
     try {
       const inner = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
-      if (inner && inner.width && inner.height) {
-        this._cachedVp = inner;
-        return inner;
-      }
+      if (inner && inner.width && inner.height) return inner;
     } catch {}
     return { width: 1280, height: 900 };
   }

@@ -14,7 +14,8 @@
     "test": "node --test test/unit/*.test.js",
     "test:integration": "node --test test/integration/*.test.js",
     "test:all": "node --test test/unit/*.test.js test/integration/*.test.js",
-    "doctor": "node scripts/doctor.js"
+    "doctor": "node scripts/doctor.js",
+    "build:extension": "node scripts/build-extension.js"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.6.0",

@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "HandsFree",
+  "version": "0.2.0",
+  "description": "Hands-free web browsing: voice commands, head tracking and pinch-to-click, driven by the local HandsFree server.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "activeTab", "scripting", "storage", "offscreen"],
+  "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "HandsFree",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["head-tracker-core.js", "page-bridge.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+H" },
+      "description": "Open the HandsFree panel"
+    },
+    "start-listening": {
+      "suggested_key": { "default": "Alt+Shift+V" },
+      "description": "Start or stop voice control"
+    },
+    "recenter": {
+      "description": "Re-center the head/hand tracker"
+    }
+  }
+}

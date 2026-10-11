@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>voice-browser</title>
+<title>HandsFree — hands-free browsing</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="HandsFree: voice navigation and head/hand tracking for accessible, hands-free web browsing." />
 <style>
   :root{
     --bg:#000;--surface:#0a0a0a;--hover:#111;--line:#242424;--line2:#3a3a3a;
@@ -67,6 +68,8 @@
   #transcript .interim{color:var(--dim);font-weight:400}
   #pending{color:var(--amber);margin-top:10px;font-size:12px}
   #pending:empty{display:none}
+  .error{color:var(--red)}
+  [hidden]{display:none !important}
 
   /* eye tracking */
   details summary{list-style:none;cursor:pointer;display:flex;align-items:center;font-size:13px;font-weight:500;color:var(--muted)}
@@ -83,6 +86,9 @@
   .settings .ctl{display:flex;align-items:center;gap:8px}
   .settings .ctl input[type=range]{flex:1;min-width:80px}
   .settings .ctl span{min-width:44px;text-align:right;font-family:var(--mono);color:var(--text)}
+  .pos{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim);
+    padding:2px 7px;border:1px solid var(--line);border-radius:4px;min-width:74px;text-align:center}
+  .pos.edge{color:var(--amber);border-color:var(--amber)}
 
   /* decision */
   .verdict{font-size:20px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px}
@@ -135,7 +141,7 @@
 </head>
 <body>
 <header>
-  <h1>voice-browser</h1>
+  <h1>HandsFree</h1>
   <div class="stats">
     <span>Model <b id="model">–</b></span>
     <span>Latency <b id="lat">–</b> ms (p50 <b id="p50">–</b>)</span>
@@ -153,7 +159,7 @@
   <div class="col">
     <section>
       <h2><span class="dot" id="micdot"></span>Microphone <span class="r" id="micstate">off</span></h2>
-      <div id="transcript"><span class="interim">Say “go to wikipedia”</span></div>
+      <div id="transcript" role="status" aria-live="polite"><span class="interim">Say “go to wikipedia”</span></div>
       <div class="row">
         <button class="primary" id="micbtn">Start mic</button>
         <button id="undo">Back</button>
@@ -164,7 +170,8 @@
         <input type="text" id="cmd" placeholder="Type a command" autocomplete="off" />
         <button type="submit">Run</button>
       </form>
-      <div id="pending"></div>
+      <div id="pending" role="status" aria-live="polite"></div>
+      <p id="micerror" class="small error" role="alert" hidden></p>
       <p class="small" style="margin:12px 0 0">Voice needs Chrome or Edge. Typing works anywhere.</p>
     </section>
 
@@ -172,16 +179,17 @@
       <details open>
         <summary>Eye control <span class="small" id="headstate" style="margin-left:auto">off</span></summary>
         <div class="headwrap">
-          <video id="headvideo" playsinline muted></video>
-          <canvas id="headcanvas" width="320" height="240"></canvas>
+          <video id="headvideo" playsinline muted aria-label="Camera preview with tracking points"></video>
+          <canvas id="headcanvas" width="320" height="240" aria-hidden="true"></canvas>
         </div>
         <div class="row" style="margin-top:12px">
           <button id="headtoggle">Enable eye control</button>
           <button id="headrecal">Re-center</button>
+          <span class="pos" id="headpos" title="Cursor position across the controlled window">50%, 50%</span>
         </div>
         <div class="settings">
           <label for="headmode">Tracking</label>
-         <select id="headmode">
+          <select id="headmode">
             <option value="head">Head pointing (recommended)</option>
             <option value="blend">Eyes + head (experimental)</option>
             <option value="eye">Eyes only (experimental)</option>
@@ -205,7 +213,7 @@
 
     <section class="grow">
       <h2>Log</h2>
-      <div class="log scroll" id="log"></div>
+      <div class="log scroll" id="log" role="log" aria-live="off"></div>
     </section>
   </div>
 
@@ -213,7 +221,7 @@
   <div class="col">
     <section>
       <h2>Decision <span class="r" id="decmeta">–</span></h2>
-      <div id="verdict" class="verdict wait">Waiting for speech</div>
+      <div id="verdict" class="verdict wait" role="status" aria-live="polite">Waiting for speech</div>
       <table id="reasons"><thead><tr><th>Gate</th><th>Value</th><th>Threshold</th><th>Note</th></tr></thead><tbody></tbody></table>
     </section>
     <section>
@@ -268,12 +276,22 @@ import { HeadTracker } from "/head-tracker.js";
   let candIds = new Set();
 
   // ------------------------------------------------------------ websocket
+  let reconnectDelay = 500;
   function connect() {
     ws = new WebSocket(`ws://${location.host}`);
-    ws.onopen = () => { $("ws").textContent = "Connected"; $("ws").classList.add("ok"); };
-    ws.onclose = () => { $("ws").textContent = "Reconnecting"; $("ws").classList.remove("ok"); setTimeout(connect, 1000); };
+    ws.onopen = () => { reconnectDelay = 500; $("ws").textContent = "Connected"; $("ws").classList.add("ok"); };
+    ws.onclose = () => {
+      $("ws").textContent = "Reconnecting";
+      $("ws").classList.remove("ok");
+      // Back off so a stopped server does not get hammered once a second forever.
+      setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+    };
+    ws.onerror = () => { try { ws.close(); } catch {} };
     ws.onmessage = (ev) => {
-      const { type, payload } = JSON.parse(ev.data);
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      const { type, payload } = msg;
       switch (type) {
         case "hello": ui = payload; renderAll(); break;
         case "transcript": renderTranscript(payload); break;
@@ -283,7 +301,7 @@ import { HeadTracker } from "/head-tracker.js";
         case "log": appendLog(payload); break;
         case "candidates": candIds = new Set((payload || []).map((c) => c.id)); renderSnapshot(); break;
         case "pending": $("pending").textContent = payload ? `Pending: ${payload.summary} — say "confirm" or "cancel"` : ""; break;
-        case "tabs": $("tabs").textContent = `${payload.length} tab${payload.length === 1 ? "" : "s"}`; break;
+        case "tabs": $("tabs").textContent = tabLabel(payload); break;
       }
     };
   }
@@ -291,6 +309,7 @@ import { HeadTracker } from "/head-tracker.js";
 
   // ------------------------------------------------------------ render
   function renderAll() {
+    if (!ui) return;
     $("model").textContent = ui.model;
     renderStats(); renderSnapshot();
     $("log").innerHTML = "";
@@ -299,12 +318,14 @@ import { HeadTracker } from "/head-tracker.js";
     if (ui.pending) $("pending").textContent = `Pending: ${ui.pending.summary} — say "confirm" or "cancel"`;
   }
   function renderStats() {
+    if (!ui || !ui.stats) return;
     const s = ui.stats;
     $("lat").textContent = s.lastLatencyMs ?? "–";
     $("p50").textContent = s.p50LatencyMs ?? "–";
     $("calls").textContent = s.calls;
     $("actions").textContent = s.actions;
-    $("cost").textContent = "$" + s.costUsd.toFixed(6);
+    // costUsd is undefined on some backends; do not render "$NaN".
+    $("cost").textContent = "$" + (Number(s.costUsd) || 0).toFixed(6);
     $("c2a").textContent = s.avgCommandToActionMs ?? "–";
     $("c2d").textContent = s.avgDecisionMs ?? "–";
     $("model").textContent = ui.model;
@@ -313,11 +334,12 @@ import { HeadTracker } from "/head-tracker.js";
     const sn = ui && ui.snapshot; if (!sn) return;
     $("url").textContent = sn.url; $("title").textContent = sn.title || "–"; $("site-name").textContent = sn.site;
     $("sbox").textContent = sn.searchBoxId || "none";
-    $("elcount").textContent = `${sn.elements.length}`;
-    if (sn.tabs) $("tabs").textContent = `${sn.tabs.length} tab${sn.tabs.length === 1 ? "" : "s"}`;
-    const rows = sn.elements.map((e) => {
+    const els = sn.elements || [];
+    $("elcount").textContent = `${els.length}`;
+    if (sn.tabs) $("tabs").textContent = tabLabel(sn.tabs);
+    const rows = els.map((e) => {
       const cls = hotIds.has(e.id) ? " hot" : candIds.has(e.id) ? " cand" : "";
-      return `<div class="el${cls}"><span class="id">${e.id}</span><span class="role">${e.role}${e.below_fold ? " ↓" : ""}</span><span class="txt" title="${esc(e.href || "")}">${esc(e.text || e.placeholder || "")}</span></div>`;
+      return `<div class="el${cls}"><span class="id">${esc(e.id)}</span><span class="role">${esc(e.role)}${e.below_fold ? " ↓" : ""}</span><span class="txt" title="${esc(e.href || "")}">${esc(e.text || e.placeholder || "")}</span></div>`;
     });
     $("elements").innerHTML = rows.join("");
     const hot = $("elements").querySelector(".hot"); if (hot) hot.scrollIntoView({ block: "center" });
@@ -336,7 +358,8 @@ import { HeadTracker } from "/head-tracker.js";
     }).join("");
   }
   function renderDecision(d) {
-    const a = d.answers, pol = d.policy;
+    if (!d || !d.policy) return;
+    const a = d.answers || {}, pol = d.policy;
     $("decmeta").textContent = `${d.latencyMs} ms, ${d.questionCount} questions, ${d.usage?.input_tokens ?? "?"} tokens, $${(d.costUsd || 0).toFixed(6)}, ${d.trigger}`;
     const v = $("verdict"); v.className = `verdict ${pol.decision}`;
     v.textContent = `${pol.decision}: ${pol.summary}` + (d.silentMs > 500 ? ` (silent ${d.silentMs}ms)` : "");
@@ -379,6 +402,14 @@ import { HeadTracker } from "/head-tracker.js";
   }
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+  /** Each navigation opens a new tab, so show the count and which one is active. */
+  function tabLabel(tabs) {
+    if (!tabs || !tabs.length) return "";
+    const active = tabs.findIndex((t) => t.active);
+    const shown = active >= 0 ? active + 1 : 1;
+    return `${tabs.length} tab${tabs.length === 1 ? "" : "s"} · showing ${shown}`;
+  }
+
   // ------------------------------------------------------------ controls
   $("cmdform").addEventListener("submit", (ev) => {
     ev.preventDefault();
@@ -390,28 +421,40 @@ import { HeadTracker } from "/head-tracker.js";
   $("undo").onclick = () => send({ type: "undo" });
   $("resnap").onclick = () => send({ type: "snapshot" });
   $("reopen").onclick = async () => {
-    $("reopen").disabled = true;
-    $("reopen").textContent = "Opening…";
+    const btn = $("reopen");
+    const reset = () => { btn.disabled = false; btn.textContent = "Open browser"; };
+    btn.disabled = true;
+    btn.textContent = "Opening…";
+    // A relaunch can take many seconds; without a timeout the button would stay stuck.
+    const timer = setTimeout(() => { reset(); }, 30000);
     try {
       const r = await fetch("/api/browser/reopen", { method: "POST" });
       const j = await r.json();
-      $("reopen").textContent = j.ok ? "Browser ready" : "Failed";
-      setTimeout(() => { $("reopen").textContent = "Open browser"; }, 2000);
+      btn.textContent = j.ok ? "Browser ready" : "Failed";
     } catch {
-      $("reopen").textContent = "Failed";
-      setTimeout(() => { $("reopen").textContent = "Open browser"; }, 2000);
+      btn.textContent = "Failed";
     } finally {
-      $("reopen").disabled = false;
+      clearTimeout(timer);
+      setTimeout(reset, 2000);
     }
   };
 
   // ------------------------------------------------------------ speech
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, micOn = false, utteranceBase = 0;
+  let rec = null, micOn = false, micStarting = false, utteranceBase = 0;
   function startMic() {
-    if (!SR) { alert("Web Speech API not available. Use Chrome or Edge, or type commands below."); return; }
+    if (micStarting) return;
+    if (!SR) {
+      // Make the reason visible on the page instead of only in a modal the user may dismiss.
+      micError("This browser has no Web Speech API. Use Chrome or Edge, or type commands below.");
+      return;
+    }
+    micError("");
+    micStarting = true;
+    $("micbtn").disabled = true;
+    $("micstate").textContent = "starting…";
     rec = new SR();
-    rec.continuous = true; rec.interimResults = true; rec.lang = "en-US"; rec.maxAlternatives = 1;
+    rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || "en-US"; rec.maxAlternatives = 1;
     rec.onresult = (ev) => {
       // Results before ev.resultIndex are finished. Each result index is a distinct utterance.
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
@@ -420,32 +463,87 @@ import { HeadTracker } from "/head-tracker.js";
         send({ type: "transcript", text, final: r.isFinal, utteranceId: `u${utteranceBase}-${i}` });
       }
     };
-    rec.onerror = (e) => { $("micstate").textContent = "error: " + e.error; if (e.error === "not-allowed") stopMic(); };
-    rec.onend = () => { if (micOn) { utteranceBase += 1; try { rec.start(); } catch {} } };
-    rec.start();
-    micOn = true; $("micdot").classList.add("on"); $("micstate").textContent = "listening"; $("micbtn").textContent = "Stop mic"; $("micbtn").classList.remove("primary");
+    rec.onstart = () => {
+      micStarting = false;
+      $("micbtn").disabled = false;
+      micOn = true;
+      $("micdot").classList.add("on");
+      $("micstate").textContent = "listening";
+      $("micbtn").textContent = "Stop mic";
+      $("micbtn").classList.remove("primary");
+    };
+    rec.onerror = (e) => {
+      micStarting = false;
+      $("micbtn").disabled = false;
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        // stopMic() below resets the label, so the reason has to be written after it.
+        stopMic();
+        micError("Microphone permission was denied. Allow it in the address bar (chrome://settings/content/microphone), then press Start mic.");
+        return;
+      }
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      micError("Speech recognition failed: " + e.error + ". Chrome needs a network connection for this.");
+      stopMic();
+      micError($("micerror").textContent);
+    };
+    rec.onend = () => {
+      if (!micOn) return;
+      utteranceBase += 1;
+      // Chrome ends the session on its own after a pause; restart to stay hands-free.
+      try { rec.start(); } catch { /* already restarting */ }
+    };
+    try {
+      // The browser asks for microphone access here, so it is tied to a real click.
+      rec.start();
+    } catch (err) {
+      micStarting = false;
+      $("micbtn").disabled = false;
+      micError("Could not start the microphone: " + err.message);
+    }
+  }
+  function micError(msg) {
+    $("micerror").textContent = msg || "";
+    $("micerror").hidden = !msg;
+    if (msg) $("micstate").textContent = "unavailable";
   }
   function stopMic() {
-    micOn = false; try { rec && rec.stop(); } catch {}
+    micOn = false; micStarting = false;
+    try { rec && rec.stop(); } catch {}
+    $("micbtn").disabled = false;
     $("micdot").classList.remove("on"); $("micstate").textContent = "off"; $("micbtn").textContent = "Start mic"; $("micbtn").classList.add("primary");
   }
-  $("micbtn").onclick = () => (micOn ? stopMic() : startMic());
+  $("micbtn").onclick = () => (micOn || micStarting ? stopMic() : startMic());
 
   $("showvideo").onchange = (e) => tracker.update({ showVideo: e.target.checked });
 
   // ------------------------------------------------------------ head tracking
+  // A start() takes seconds (model download, then the camera prompt). Without this the
+  // button stays clickable and a second click opens a second camera stream.
+  let headStarting = false;
   const tracker = new HeadTracker({
     video: $("headvideo"),
     canvas: $("headcanvas"),
-        onStatus: (s) => {
+    onStatus: (s) => {
       const el = $("headstate");
       const base = s.state === "running" ? (s.face === false ? "no face" : s.calibrating ? "calibrating, look straight ahead" : "tracking") : s.state;
       el.textContent = s.pinching ? "pinch — click!" : base;
       el.style.color = s.state === "error" ? "var(--red)" : s.pinching ? "var(--accent)" : s.state === "running" ? "var(--green)" : "var(--muted)";
       if (s.message) $("headstate").title = s.message;
-      $("headtoggle").textContent = tracker.running ? "Disable eye control" : "Enable eye control";
+      // The button reflects the tracker, not the click: while the camera is starting,
+      // "running" is still false, so say "Starting…" rather than inviting a second click.
+      const btn = $("headtoggle");
+      btn.textContent = tracker.running
+        ? "Disable eye control"
+        : headStarting
+          ? "Starting…"
+          : "Enable eye control";
+      btn.disabled = headStarting;
     },
     onPoint: (p) => {
+      // Live cursor readout: makes it obvious whether the pointer is reaching the
+      // screen edges, which is otherwise impossible to judge.
+      $("headpos").textContent = `${Math.round(p.x * 100)}%, ${Math.round(p.y * 100)}%`;
+      $("headpos").classList.toggle("edge", p.x < 0.03 || p.x > 0.97 || p.y < 0.03 || p.y > 0.97);
       send({ type: "pointer", x: p.x, y: p.y, snap: $("headsnap").checked });
     },
     onActivate: (a) => {
@@ -456,18 +554,43 @@ import { HeadTracker } from "/head-tracker.js";
 
   $("headtoggle").onclick = async () => {
     if (tracker.running) { tracker.stop(); return; }
+    if (headStarting) return;
+    headStarting = true;
+    const btn = $("headtoggle");
+    btn.disabled = true;
+    btn.textContent = "Starting…";
     $("headstate").textContent = "starting…";
-    const r = await tracker.start();
-    if (!r.ok) $("headstate").textContent = "unavailable";
+    $("headstate").title = "";
+    try {
+      const r = await tracker.start();
+      if (!r.ok) {
+        // Keep the reason on the page: "unavailable" alone tells the user nothing.
+        $("headstate").textContent = "unavailable";
+        $("headstate").title = r.error || "the camera could not be started";
+        $("headstate").style.color = "var(--red)";
+      }
+    } catch (err) {
+      $("headstate").textContent = "error";
+      $("headstate").title = String(err?.message || err);
+    } finally {
+      headStarting = false;
+      btn.disabled = false;
+      btn.textContent = tracker.running ? "Disable eye control" : "Enable eye control";
+    }
   };
-  $("headrecal").onclick = () => tracker.recalibrate();
+  $("headrecal").onclick = () => {
+    if (!tracker.running) { $("headstate").textContent = "start eye control first"; return; }
+    tracker.recalibrate();
+    $("headstate").textContent = "calibrating, hold still";
+  };
   $("headmode").onchange = (e) => {
     tracker.update({ mode: e.target.value });
     tracker.recalibrate(); // new mode => new neutral pose
   };
   $("headclick").onchange = (e) => {
+    // update() loads the hand model on demand now; loading it here too would
+    // kick off a second, redundant download.
     tracker.update({ clickMode: e.target.value });
-    if (e.target.value === "pinch") tracker.loadHands();
   };
   $("headsens").oninput = (e) => {
     $("headsensv").textContent = Number(e.target.value).toFixed(1);
