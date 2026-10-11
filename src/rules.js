@@ -21,6 +21,13 @@ export function normalizeCommand(text) {
 }
 
 const RULES = [
+  { intent: "media", op: "pause", re: /^(?:pause|freeze)\s*(?:(?:the|this)\s+)?(?:video|playback|clip|music|track|song|audio)?$/ },
+  { intent: "media", op: "play", re: /^(?:resume|unpause|unfreeze)\s*(?:(?:the|this)\s+)?(?:video|playback|clip|music|track|song|audio)?$/ },
+  { intent: "media", op: "next", re: /^skip$|^(?:skip|next)\s+(?:(?:the|this)\s+)?(?:track|song|video|clip|item|one)$/ },
+  { intent: "media", op: "previous", re: /^(?:previous|prev|last)\s+(?:(?:the|this)\s+)?(?:track|song|video|clip|item|one)$/ },
+  { intent: "media", op: "volume_up", re: /^(?:volume up|louder|turn\s+(?:it\s+)?up|increase volume)$/ },
+  { intent: "media", op: "volume_down", re: /^(?:volume down|quieter|turn\s+(?:it\s+)?down|decrease volume)$/ },
+  { intent: "media", op: "mute", re: /^(?:mute|unmute|toggle mute|silence)$/ },
   { intent: "go_back", re: /^(go |take me |get me )?back$|^(go |get )?back to|^undo( that| this| it)?$|^(go )?previous( page)?$|^previous page$|^back$|^undo$|^previous$|^return( to (the )?previous)?$|^take me back$|^go back( one| 1)?$/ },
   { intent: "go_forward", re: /^(go )?forward$|^redo( that| this| it)?$|^redo$|^forward$|^move forward$/ },
   { intent: "reload", re: /^(re)?load( the (page|website|site))?$|^refresh( the (page|website|site|tab))?$|^refresh$|^reload$|^reload page$|^refresh page$|^reload( it| this| the site)?$|^refresh( it| this)$/ },
@@ -37,7 +44,7 @@ const RULES = [
   { intent: "hide_numbers", re: /^(hide|clear|remove|get rid of|take away)\s*(the )?(numbers|numbering|numbered list)$|^hide (the )?numbers$|^no numbers$|^numbers off$/ },
   // The mic is always on by default, which picks up the room. Let the user turn it off without
   // reaching for the mouse, and back on again when they are ready.
-  { intent: "stop_listening", re: /^(stop|pause|halt|shut up|be quiet|quiet)\s*(listening|the mic|hearing me|voice)?$|^stop listening$|^pause listening$|^stop hearing me$|^(mute|unlisten)$/ },
+  { intent: "stop_listening", re: /^(stop|pause|halt|shut up|be quiet|quiet)\s*(listening|the mic|hearing me|voice)?$|^stop listening$|^pause listening$|^stop hearing me$|^(mute|unlisten)( the mic| listening)?$/ },
   { intent: "start_listening", re: /^(start|resume|unpause|continue)\s*(listening|the mic|hearing me|voice)?$|^start listening$|^resume listening$|^listen( again)?$|^wake up$/ },
   // Keyboard control. Enter was the only key reachable by voice, which makes filling in a
   // form impossible: there is no way to get between fields, fix a mistake, or dismiss a dialog.
@@ -91,6 +98,7 @@ const RULES = [
   { intent: "zoom_reset", re: /^(reset|normal) zoom$|^zoom (reset|normal|100)$|^actual size$/ },
   { intent: "read_page", re: /^read (this|the|it all|this whole) page( (aloud|out loud|to me))?$|^read (it )?(aloud|out loud)$|^what does (this|the) page say$/ },
   { intent: "repeat_last", re: /^(repeat|again|do that again|one more time|once more|do it again|same again)$|^repeat (that|it)( again)?$/ },
+  { intent: "play_video", video: true, re: /^(?:play|watch)\s+(?:the\s+)?(?:\d+(?:st|nd|rd|th)|first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|ninth|9th|tenth|10th|last|final)\s+(?:(?:youtube|yt)\s+)?(?:video|clip|short)(?:\s+(?:on|from|in)\s+(?:youtube|yt))?$/ },
 ];
 
 const SITE_WORDS = {
@@ -184,9 +192,9 @@ const SEARCH_SITES = [
   .map((s) => `(?:${s})`)
   .join("|");
 
-const ORDINAL_WORDS_TEST = /\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|last|final)\b/;
+const ORDINAL_WORDS_TEST = /\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|sixth|6th|seventh|7th|eighth|8th|ninth|9th|tenth|10th|last|final)\b/;
 
-const ORDINALS = {
+export const ORDINALS = {
   first: 0,
   "1st": 0,
   second: 1,
@@ -197,6 +205,16 @@ const ORDINALS = {
   "4th": 3,
   fifth: 4,
   "5th": 4,
+  sixth: 5,
+  "6th": 5,
+  seventh: 6,
+  "7th": 6,
+  eighth: 7,
+  "8th": 7,
+  ninth: 8,
+  "9th": 8,
+  tenth: 9,
+  "10th": 9,
   last: -1,
   final: -1,
 };
@@ -255,6 +273,11 @@ export function recognize(transcript, { site: snapshotSite = "generic" } = {}) {
       out.url_span = { type: "choice", choice: rule.url, confidence: 0.9, probabilities: { [rule.url]: 0.9, none: 0.1 } };
       return out;
     }
+    if (rule.video) {
+      const word = ORDINAL_WORDS_TEST.exec(t)?.[1];
+      out.video_index = word ? ORDINALS[word] : 0;
+    }
+    if (rule.op) out.media_op = rule.op;
     // Keys travel as a target-free payload; code owns the mapping so the model never picks them.
     if (rule.key) out.press_key = { key: rule.key };
     if (rule.intent === "scroll_start") {

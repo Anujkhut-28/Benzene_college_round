@@ -416,6 +416,113 @@ export async function execute(action, browser) {
       return { ok: true, detail: `tabs=${browser.pages.length}` };
     }
 
+    case "play_video": {
+      const want = Number.isInteger(action.index) ? action.index : 0;
+      const found = await page
+        .evaluate((i) => {
+          const sel = 'a[href*="/watch?v="],a[href*="/shorts/"],a[href*="youtu.be/"]';
+          const siteChrome = "#masthead, ytd-masthead, ytd-mini-guide-renderer, ytd-guide-renderer, tp-yt-app-drawer, ytd-popup-container, ytd-mini-player";
+          const seen = new Set();
+          const list = [];
+          for (const a of document.querySelectorAll(sel)) {
+            if (a.closest(siteChrome)) continue;
+            const r = a.getBoundingClientRect();
+            if (r.width < 4 || r.height < 4) continue;
+            let href;
+            try {
+              href = new URL(a.getAttribute("href"), location.href).href;
+            } catch {
+              continue;
+            }
+            if (seen.has(href)) continue;
+            seen.add(href);
+            list.push({ href, title: (a.getAttribute("title") || a.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60) });
+          }
+          const pick = i === -1 ? list[list.length - 1] : list[i];
+          return { total: list.length, pick: pick || null };
+        }, want)
+        .catch(() => ({ total: 0, pick: null }));
+      if (!found.pick) {
+        return {
+          ok: false,
+          detail: found.total ? `only ${found.total} video${found.total === 1 ? "" : "s"} on this page` : "no videos on this page",
+        };
+      }
+      await browser.overlay("toast", `play: ${found.pick.title || found.pick.href}`);
+      await page.goto(found.pick.href, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT }).catch(() => {});
+      await settle(page, 1500);
+      return { ok: true, detail: found.pick.title || found.pick.href };
+    }
+
+    case "media": {
+      const op = action.op || "play";
+      const res = await page
+        .evaluate(async (o) => {
+          const NAMES = {
+            play: ["play"],
+            pause: ["pause"],
+            next: ["next", "skip"],
+            previous: ["previous", "prev"],
+            volume_up: ["volume up", "louder", "increase volume"],
+            volume_down: ["volume down", "quieter", "decrease volume"],
+            mute: ["mute", "unmute"],
+          };
+          const wanted = NAMES[o] || [];
+          const text = (el) =>
+            (el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          const area = (el) => {
+            const r = el.getBoundingClientRect();
+            return r.width * r.height;
+          };
+          const primary = () => {
+            const vids = [...document.querySelectorAll("video")].filter((v) => area(v) > 0);
+            if (!vids.length) return null;
+            const inPlayer = (v) => (v.closest("video-player, ytd-player, #movie_player, .html5-video-player") ? 1 : 0);
+            return vids.sort((a, b) => inPlayer(b) - inPlayer(a) || area(b) - area(a))[0];
+          };
+          if (o === "pause" || o === "play") {
+            const v = primary();
+            if (v) {
+              if (o === "pause") v.pause();
+              else await Promise.race([v.play().catch(() => {}), new Promise((r) => setTimeout(r, 800))]);
+              await new Promise((r) => setTimeout(r, 120));
+              const now = v.paused ? "paused" : "playing";
+              return { via: "video", label: now, ok: now === (o === "pause" ? "paused" : "playing") };
+            }
+          }
+          const nodes = [...document.querySelectorAll("button,[role=button],[role=menuitemcheckbox],input[type=button]")];
+          const byText = nodes.map((el) => ({ el, label: text(el) })).filter((x) => x.label);
+          const hit = byText.find((x) => wanted.includes(x.label)) || byText.find((x) => wanted.some((n) => x.label.startsWith(`${n} `) || x.label.startsWith(`${n}(`)));
+          if (hit) {
+            hit.el.click();
+            return { via: "button", label: hit.label.slice(0, 40), ok: true };
+          }
+          if (o === "volume_up" || o === "volume_down") {
+            const slider = document.querySelector('input[type=range][aria-label*="olume" i], input[type=range][aria-label*="loudness" i]');
+            if (slider) {
+              const min = Number(slider.min || 0);
+              const max = Number(slider.max || 100);
+              const step = Number(slider.step || 5) || 5;
+              const cur = Number(slider.value);
+              const next = o === "volume_up" ? Math.min(max, cur + step) : Math.max(min, cur - step);
+              slider.value = String(next);
+              slider.dispatchEvent(new Event("input", { bubbles: true }));
+              slider.dispatchEvent(new Event("change", { bubbles: true }));
+              return { via: "slider", label: `volume ${cur} to ${next}`, ok: next !== cur };
+            }
+          }
+          return { via: null, label: null, ok: false };
+        }, op)
+        .catch(() => ({ via: null, label: null, ok: false }));
+      if (!res.via) return { ok: false, detail: `no ${op.replace("_", " ")} control on this page` };
+      if (!res.ok) return { ok: false, detail: `${op.replace("_", " ")} did not take effect (still ${res.label})` };
+      await browser.overlay("toast", `${op}: ${res.label}`);
+      return { ok: true, detail: `${op} via ${res.via} (${res.label})` };
+    }
+
     case "read_page": {
       // Read what a sighted user would read: the main content, with menus and boilerplate out.
       const text = await page.evaluate(() => {

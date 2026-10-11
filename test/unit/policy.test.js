@@ -296,6 +296,40 @@ test("voice clicks on risky button text still require confirmation when the mode
   assert.equal(yes.action.confirmed, true);
 });
 
+test("play_video acts on the spoken position without asking for a target or confirmation", () => {
+  const mk = (index) => evaluatePolicy({ answers: answers({ intent: ch("play_video", 0.95), video_index: index }), candidates, snapshot });
+  assert.deepEqual(mk(0).action, { type: "play_video", index: 0, label: "play video 1" });
+  assert.equal(mk(2).action.index, 2);
+  assert.equal(mk(-1).action.index, -1);
+  assert.equal(mk(0).decision, "act");
+  assert.equal(mk(1).decision, "act");
+});
+
+test("search never types into Google's box, which answers with a captcha", () => {
+  const mk = (site, searchBoxId) => ({ url: `https://${site}/x`, title: "t", site, searchBoxId, elements: [] });
+  const go = (site) => evaluatePolicy({ answers: answers({ intent: ch("search_web", 0.95), text_span: ch("cats", 0.9) }), candidates, snapshot: mk(site, "e02"), isFinal: true });
+  const google = go("google");
+  assert.equal(google.action.type, "navigate_url");
+  assert.equal(google.action.url, "https://duckduckgo.com/?q=cats");
+});
+
+test("search still uses the page's own box where that box works", () => {
+  const mk = (site, searchBoxId) => ({ url: `https://${site}/x`, title: "t", site, searchBoxId, elements: [] });
+  const go = (site) => evaluatePolicy({ answers: answers({ intent: ch("search_web", 0.95), text_span: ch("cats", 0.9) }), candidates, snapshot: mk(site, "e02"), isFinal: true });
+  for (const site of ["spotify", "example.com", "duckduckgo"]) {
+    const r = go(site);
+    assert.equal(r.action.type, "type_into_field", site);
+    assert.equal(r.action.targetId, "e02", site);
+  }
+});
+
+test("media acts without asking for a target", () => {
+  const mk = (op) => evaluatePolicy({ answers: answers({ intent: ch("media", 0.95), media_op: op }), candidates, snapshot });
+  assert.equal(mk("pause").decision, "act");
+  assert.deepEqual(mk("pause").action, { type: "media", op: "pause", label: "media pause" });
+  assert.equal(mk("volume_up").action.op, "volume_up");
+});
+
 test("scroll amount maps score levels to little / page / end", () => {
   const mk = (score) => answers({ scroll_amount: { score, confidence: 0.9, probabilities: {} } });
   assert.equal(evaluatePolicy({ answers: mk(0.2), candidates, snapshot }).action.amount, "little");

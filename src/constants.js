@@ -126,6 +126,14 @@ export const SITE_PATHS = {
     trending: "https://www.youtube.com/feed/trending",
     "my channel": "https://www.youtube.com/feed/you",
   },
+  spotify: {
+    library: "https://open.spotify.com/collection/tracks",
+    playlists: "https://open.spotify.com/collection/playlists",
+    albums: "https://open.spotify.com/collection/albums",
+    artists: "https://open.spotify.com/collection/artists",
+    podcasts: "https://open.spotify.com/collection/podcasts",
+    search: "https://open.spotify.com/search",
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +155,16 @@ export const INTENT_CRITERIA = {
     what: "Click / press / open / select / choose a link, button, tab, result or item that is on the current page",
     not_for: "Opening a website by name; typing text",
     examples: ["click the first result", "click sign in", "open the second link", "press the more information link"],
+  },
+  play_video: {
+    what: "Play / watch a specific video by its position on the page (the first, second, third video)",
+    not_for: "Clicking a video by its title; searching for a video to watch",
+    examples: ["play the first video", "play the third video", "watch the second video on youtube"],
+  },
+  media: {
+    what: "Control what is currently playing (pause, resume, skip, volume, mute)",
+    not_for: "Choosing which video to play from a list; stopping the microphone",
+    examples: ["pause", "resume the video", "skip", "next track", "volume up", "mute"],
   },
   type_into_field: {
     what: "Type or enter specific text into an input box, search box or text field on the page",

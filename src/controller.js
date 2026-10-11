@@ -529,7 +529,7 @@ export class Controller extends EventEmitter {
    */
   _updateDictation(action) {
     const type = action?.type;
-    if (type === "navigate_url" || type === "go_back" || type === "set_mic" || type === "press_enter") {
+    if (type === "navigate_url" || type === "go_back" || type === "set_mic" || type === "press_enter" || type === "play_video") {
       this.dictation = false;
       // Navigating away must not leave the page scrolling itself.
       this._stopContinuousScroll();

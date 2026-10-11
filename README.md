@@ -132,6 +132,10 @@ Numbers work to 60, as digits or words ("fourteen", "twenty three").
 | "open shorts" / "open subscriptions" / "open my history" | goes to that page inside YouTube |
 | "search for alan turing" | uses the page's search box, else DuckDuckGo |
 | "search youtube for lofi beats" | site-specific search |
+
+The one exception is Google: searching while a Google page is open goes to DuckDuckGo instead,
+because typing a query into Google's box can come back as an "I'm not a robot" wall with no way
+past it by voice. Say "search google for X" if you specifically want Google.
 | "go back" / "go forward" / "reload" | history |
 | "open a new tab" / "close this tab" / "next tab" / "previous tab" | tabs |
 | "go to tab 3" / "tab two" | jumps straight to that tab |
@@ -140,6 +144,26 @@ Numbers work to 60, as digits or words ("fourteen", "twenty three").
 | "find on page" | opens the browser's find bar |
 | "zoom in" / "zoom out" / "reset zoom" | page zoom |
 | "read this page" | reads the main content aloud |
+| "play the third video" / "play the last video" | plays that video on the current page |
+
+"Play the Nth video" counts the videos on the page in reading order, skipping the site's own menus
+and each video's duplicate links, so "the second video" is genuinely the second one. It needs a
+position: a bare "play video" is left to the model rather than assumed to mean the first one.
+
+### Controlling what is playing
+
+Works on YouTube and on Spotify, and on anything else built from standard controls.
+
+| say | what happens |
+| --- | --- |
+| "pause" / "pause the video" | pauses |
+| "resume" / "unpause" | resumes |
+| "skip" / "next track" / "previous track" | next or previous |
+| "volume up" / "louder" / "volume down" / "quieter" | volume |
+| "mute" | mutes |
+
+These sit above the microphone rules, so a bare "pause" now pauses playback. To stop the mic, keep
+saying "pause listening". "pause scrolling" and "next" / "previous" are untouched.
 
 Scrolling is aimed by **where the cursor is**, so look at what you want to move. A chat pane, modal
 or feed scrolls instead of the page whenever it is under the cursor.

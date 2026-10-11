@@ -1,5 +1,5 @@
 import { buildRequest } from "./jev.js";
-import { recognize } from "./rules.js";
+import { recognize, ORDINALS } from "./rules.js";
 import { decideBatch } from "./decision.js";
 import { TARGET_INTENTS } from "./constants.js";
 import { runtimeState } from "./runtime.js";
@@ -8,26 +8,9 @@ export const MODEL_LABEL = "Jev-Style-0.8B-Decision-v3 (embedded)";
 
 const AMBIGUOUS_MAX = Number(process.env.HANDSFREE_AMBIGUOUS) || 0.45;
 
-const ORDINAL_WORDS = {
-  first: 0,
-  "1st": 0,
-  second: 1,
-  "2nd": 1,
-  third: 2,
-  "3rd": 2,
-  fourth: 3,
-  "4th": 3,
-  fifth: 4,
-  "5th": 4,
-  sixth: 5,
-  "6th": 5,
-  last: -1,
-  final: -1,
-};
-
 export function ordinalFromTranscript(transcript) {
   const said = String(transcript || "").toLowerCase();
-  for (const [word, idx] of Object.entries(ORDINAL_WORDS)) {
+  for (const [word, idx] of Object.entries(ORDINALS)) {
     if (new RegExp(`\\b${word}\\b`).test(said)) return idx;
   }
   return null;

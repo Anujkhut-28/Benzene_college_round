@@ -162,6 +162,76 @@ test("recognizes ordinals for element picking", () => {
   assert.equal(recognize("click the third result").ordinal, 2);
   assert.equal(recognize("click the last link").ordinal, -1);
   assert.equal(recognize("click sign in").ordinal, undefined);
+  assert.equal(recognize("click the sixth result").ordinal, 5);
+  assert.equal(recognize("click the tenth result").ordinal, 9);
+});
+
+test("'play the Nth video' picks a video by position, not by element index", () => {
+  const cases = {
+    "play first video": 0,
+    "play the second video": 1,
+    "watch the third video": 2,
+    "play the 4th video": 3,
+    "play the tenth video": 9,
+    "Play the 2nd video, please.": 1,
+    "play last video": -1,
+    "watch the second video on youtube": 1,
+    "play first youtube video": 0,
+  };
+  for (const [said, index] of Object.entries(cases)) {
+    const r = recognize(said, { site: "youtube" });
+    assert.ok(r, `"${said}" should be recognised`);
+    assert.equal(r.intent.choice, "play_video", said);
+    assert.equal(r.video_index, index, said);
+  }
+});
+
+test("'play video' rules stay narrow rather than guessing which video", () => {
+  for (const said of ["play video", "play the video", "play guitar", "play piano"]) {
+    const r = recognize(said, { site: "youtube" });
+    assert.ok(!r || r.intent.choice !== "play_video", `"${said}" must not be treated as a numbered video`);
+  }
+  assert.equal(intentOf("click the first result"), "click_element");
+  assert.equal(intentOf("search for cats"), "search_web");
+  assert.equal(intentOf("go to youtube"), "navigate_url");
+});
+
+test("bare pause and resume drive the media, not the microphone", () => {
+  const mediaOf = (t) => {
+    const r = recognize(t, { site: "spotify" });
+    return r?.intent?.choice === "media" ? r.media_op : r?.intent?.choice ?? null;
+  };
+  assert.equal(mediaOf("pause"), "pause");
+  assert.equal(mediaOf("pause the video"), "pause");
+  assert.equal(mediaOf("pause music"), "pause");
+  assert.equal(mediaOf("freeze"), "pause");
+  assert.equal(mediaOf("resume"), "play");
+  assert.equal(mediaOf("resume the video"), "play");
+  assert.equal(mediaOf("unpause"), "play");
+  assert.equal(mediaOf("skip"), "next");
+  assert.equal(mediaOf("next track"), "next");
+  assert.equal(mediaOf("previous track"), "previous");
+  assert.equal(mediaOf("volume up"), "volume_up");
+  assert.equal(mediaOf("louder"), "volume_up");
+  assert.equal(mediaOf("mute"), "mute");
+  assert.equal(mediaOf("unmute"), "mute");
+});
+
+test("'pause listening' still reaches the microphone, and scroll words still scroll", () => {
+  const mediaOf = (t) => {
+    const r = recognize(t, { site: "spotify" });
+    return r?.intent?.choice === "media" ? r.media_op : r?.intent?.choice ?? null;
+  };
+  assert.equal(intentOf("pause listening"), "stop_listening");
+  assert.equal(intentOf("stop listening"), "stop_listening");
+  assert.equal(intentOf("resume listening"), "start_listening");
+  assert.equal(intentOf("pause scrolling"), "scroll_stop");
+  assert.equal(mediaOf("pause the mic"), "stop_listening");
+  assert.equal(mediaOf("mute the mic"), "stop_listening");
+  assert.equal(mediaOf("mute listening"), "stop_listening");
+  assert.equal(intentOf("continue"), "start_listening");
+  assert.equal(intentOf("next"), "scroll_down");
+  assert.equal(intentOf("previous"), "go_back");
 });
 
 test("'show numbers' numbers the page however it is phrased", () => {

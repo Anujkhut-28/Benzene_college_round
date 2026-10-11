@@ -158,6 +158,7 @@ export function detectSite(url) {
   if (host.endsWith("google.com") || host.endsWith("google.co.uk")) return "google";
   if (host.endsWith("duckduckgo.com")) return "duckduckgo";
   if (host.endsWith("youtube.com")) return "youtube";
+  if (host.endsWith("spotify.com")) return "spotify";
   if (host.endsWith("wikipedia.org")) return "wikipedia";
   if (host.endsWith("github.com")) return "github";
   if (host.endsWith("amazon.com") || host.endsWith("amazon.de") || host.endsWith("amazon.co.uk")) return "amazon";

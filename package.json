@@ -1,6 +1,6 @@
 {
   "name": "handsfree",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "HandsFree: accessibility-focused hands-free web browsing. Voice navigation with an embedded local decision model, plus webcam head-tracking cursor control and dwell-to-click. No API key required.",

@@ -18,6 +18,8 @@ import { toHttpUrl, extractPathCandidates } from "./spans.js";
 
 const r2 = (x) => Math.round(x * 100) / 100;
 
+const SEARCH_VIA_FORM_BLOCKED = new Set(["google"]);
+
 function check(reasons, name, value, threshold, pass, note) {
   reasons.push({ name, value: typeof value === "number" ? r2(value) : value, threshold, pass, note });
   return pass;
@@ -259,10 +261,20 @@ function buildAction({ intentName, answers, candidates, snapshot, reasons, exclu
       if (SITE_SEARCH[site]) {
         return { decision: "act", action: { type: "navigate_url", url: fillTemplate(SITE_SEARCH[site], query), label: `search ${site}: ${query}`, query } };
       }
-      if (snapshot?.searchBoxId && snapshot.site !== "blank") {
+      if (snapshot?.searchBoxId && snapshot.site !== "blank" && !SEARCH_VIA_FORM_BLOCKED.has(snapshot.site)) {
         return { decision: "act", action: { type: "type_into_field", targetId: snapshot.searchBoxId, text: query, submit: true, label: `search this site: ${query}` } };
       }
       return { decision: "act", action: { type: "navigate_url", url: fillTemplate(SITE_SEARCH[DEFAULT_SEARCH_ENGINE], query), label: `search: ${query}`, query } };
+    }
+
+    case "play_video": {
+      const idx = Number.isInteger(answers.video_index) ? answers.video_index : 0;
+      return { decision: "act", action: { type: "play_video", index: idx, label: `play video ${idx === -1 ? "last" : idx + 1}` } };
+    }
+
+    case "media": {
+      const op = answers.media_op || "play";
+      return { decision: "act", action: { type: "media", op, label: `media ${op.replace("_", " ")}` } };
     }
 
     case "show_numbers":
